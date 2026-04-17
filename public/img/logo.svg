@@ -1,0 +1,15 @@
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background circle -->
+  <circle cx="100" cy="100" r="95" fill="#007bff" opacity="0.1" stroke="#007bff" stroke-width="2"/>
+  
+  <!-- Main logo shape - stylized "A" -->
+  <g fill="#007bff">
+    <!-- Left diagonal -->
+    <polygon points="100,40 60,120 75,120 100,60 125,120 140,120"/>
+    <!-- Horizontal bar -->
+    <rect x="70" y="100" width="60" height="8" fill="#007bff"/>
+  </g>
+  
+  <!-- Text -->
+  <text x="100" y="160" font-size="20" font-weight="bold" text-anchor="middle" fill="#007bff" font-family="Arial">AfterMarket</text>
+</svg>
