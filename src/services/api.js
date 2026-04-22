@@ -1,4 +1,62 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api'
+const API_BASE_URL = import.meta.env.VITE_API_URL
+const RFQC_SUB_ELEMENT_API_ENABLED =
+  String(import.meta.env.VITE_ENABLE_RFQC_SUB_ELEMENT_API || 'true').trim().toLowerCase() ===
+  'true'
+const RFQC_SUB_ELEMENT_BASE_PATHS = [
+  '/rfq-costing-initial-sub-elements',
+  '/rfqc-sub-element',
+]
+
+function buildApproveSubElementPayload(payload = {}) {
+  const normalizedPayload = { ...payload }
+  const approvalStatus =
+    normalizedPayload.approval_status ?? normalizedPayload.approvalStatus
+  const designType = normalizedPayload.design_type ?? normalizedPayload.designType
+  const approver =
+    normalizedPayload.approver ?? normalizedPayload.manager_name ?? normalizedPayload.managerName
+  const approverEmail =
+    normalizedPayload.approver_email ??
+    normalizedPayload.approverEmail ??
+    normalizedPayload.manager_email ??
+    normalizedPayload.managerEmail
+  const approverId =
+    normalizedPayload.approver_id ??
+    normalizedPayload.approverId ??
+    normalizedPayload.manager_id ??
+    normalizedPayload.managerId
+
+  if (approvalStatus !== undefined) {
+    normalizedPayload.approval_status = approvalStatus
+    normalizedPayload.approvalStatus = approvalStatus
+  }
+
+  if (designType !== undefined) {
+    normalizedPayload.design_type = designType
+    normalizedPayload.designType = designType
+  }
+
+  if (approver !== undefined) {
+    normalizedPayload.approver = approver
+    normalizedPayload.manager_name = approver
+    normalizedPayload.managerName = approver
+  }
+
+  if (approverEmail !== undefined) {
+    normalizedPayload.approver_email = approverEmail
+    normalizedPayload.approverEmail = approverEmail
+    normalizedPayload.manager_email = approverEmail
+    normalizedPayload.managerEmail = approverEmail
+  }
+
+  if (approverId !== undefined) {
+    normalizedPayload.approver_id = approverId
+    normalizedPayload.approverId = approverId
+    normalizedPayload.manager_id = approverId
+    normalizedPayload.managerId = approverId
+  }
+
+  return normalizedPayload
+}
 
 function buildUrl(path) {
   const normalizedBaseUrl = API_BASE_URL.replace(/\/+$/, '')
@@ -42,6 +100,7 @@ function translateApiMessage(message) {
     'Votre compte est en attente d approbation par un administrateur.':
       'Your account is pending administrator approval.',
     'Mot de passe modifie avec succes.': 'Password updated successfully.',
+    'Authentication is required.': 'Authentication is required.',
   }
 
   if (exactTranslations[message]) {
@@ -87,7 +146,11 @@ async function request(path, options = {}) {
   const translatedMessage = translateApiMessage(data?.message)
 
   if (!response.ok) {
-    throw new Error(translatedMessage || 'Request failed.')
+    const error = new Error(translatedMessage || 'Request failed.')
+    error.statusCode = response.status
+    error.responseData = data
+    error.requestPath = path
+    throw error
   }
 
   if (data && typeof data === 'object' && translatedMessage) {
@@ -98,6 +161,43 @@ async function request(path, options = {}) {
   }
 
   return data
+}
+
+function buildQueryString(query = {}) {
+  const searchParams = new URLSearchParams()
+
+  Object.entries(query).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') {
+      return
+    }
+
+    searchParams.set(key, String(value))
+  })
+
+  const serializedQuery = searchParams.toString()
+  return serializedQuery ? `?${serializedQuery}` : ''
+}
+
+async function requestWithFallback(paths, options = {}) {
+  let lastError = null
+
+  for (const path of paths) {
+    try {
+      return await request(path, options)
+    } catch (error) {
+      lastError = error
+
+      if (error?.statusCode !== 404) {
+        throw error
+      }
+    }
+  }
+
+  throw lastError || new Error('Request failed.')
+}
+
+export function isRfqCostingSubElementApiEnabled() {
+  return RFQC_SUB_ELEMENT_API_ENABLED
 }
 
 export function signUp(payload) {
@@ -142,10 +242,53 @@ export function changePassword(userId, payload, token) {
   })
 }
 
+export function getNotifications(token, limit = 20) {
+  const queryString = buildQueryString({ limit })
+
+  return request(`/notifications${queryString}`, {
+    method: 'GET',
+    token,
+  })
+}
+
+export function markAllNotificationsAsRead(token) {
+  return request('/notifications/read-all', {
+    method: 'PATCH',
+    token,
+  })
+}
+
+export function getUsers() {
+  return request('/users', {
+    method: 'GET',
+  })
+}
+
 export function getRfqs() {
   return request('/rfqs', {
     method: 'GET',
   })
+}
+
+export function getRfqCostingSubElementsByCostingIds(costingIds, currentRole) {
+  const normalizedCostingIds = Array.from(
+    new Set(
+      (Array.isArray(costingIds) ? costingIds : [])
+        .map((costingId) => String(costingId ?? '').trim())
+        .filter(Boolean),
+    ),
+  )
+  const queryString = buildQueryString({
+    current_role: currentRole,
+    costing_ids: normalizedCostingIds.join(','),
+  })
+
+  return requestWithFallback(
+    RFQC_SUB_ELEMENT_BASE_PATHS.map((basePath) => `${basePath}/costings${queryString}`),
+    {
+      method: 'GET',
+    },
+  )
 }
 
 export function createRfqCosting(rfqId, payload) {
@@ -160,4 +303,109 @@ export function updateRfqCosting(costingId, payload) {
     method: 'PUT',
     body: JSON.stringify(payload),
   })
+}
+
+export function deleteRfqCosting(costingId) {
+  return request(`/rfq-costing/${encodeURIComponent(costingId)}`, {
+    method: 'DELETE',
+  })
+}
+
+export function getInitialSubElementOptions() {
+  return request('/rfq-costing-initial-sub-elements/options', {
+    method: 'GET',
+  })
+}
+
+export function getInitialSubElementsByCostingId(costingId) {
+  return request(`/rfq-costing-initial-sub-elements/costing/${encodeURIComponent(costingId)}`, {
+    method: 'GET',
+  })
+}
+
+export function getInitialSubElementByKey(costingId, key) {
+  return request(`/rfq-costing-initial-sub-elements/costing/${encodeURIComponent(costingId)}/${encodeURIComponent(key)}`, {
+    method: 'GET',
+  })
+}
+
+export function updateInitialSubElement(costingId, key, payload) {
+  const url = `/rfq-costing-initial-sub-elements/costing/${encodeURIComponent(costingId)}/${encodeURIComponent(key)}`
+  console.log('[api.js] updateInitialSubElement ▶ PATCH', url)
+  console.log('[api.js] payload sent:', payload)
+
+  return request(url, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getRfqCostingSubElementOptions() {
+  return requestWithFallback(
+    RFQC_SUB_ELEMENT_BASE_PATHS.map((basePath) => `${basePath}/options`),
+    {
+      method: 'GET',
+    },
+  )
+}
+
+export function getRfqCostingSubElements(costingId, currentRole) {
+  const queryString = buildQueryString({ current_role: currentRole })
+  const paths = RFQC_SUB_ELEMENT_BASE_PATHS.map(
+    (basePath) => `${basePath}/costing/${encodeURIComponent(costingId)}${queryString}`,
+  )
+
+  return requestWithFallback(paths, {
+    method: 'GET',
+  })
+}
+
+export function getRfqCostingSubElement(costingId, key, currentRole) {
+  const queryString = buildQueryString({ current_role: currentRole })
+
+  return requestWithFallback(
+    RFQC_SUB_ELEMENT_BASE_PATHS.map(
+      (basePath) =>
+        `${basePath}/costing/${encodeURIComponent(costingId)}/${encodeURIComponent(key)}${queryString}`,
+    ),
+    {
+      method: 'GET',
+    },
+  )
+}
+
+export function updateRfqCostingSubElement(costingId, key, payload) {
+  return requestWithFallback(
+    RFQC_SUB_ELEMENT_BASE_PATHS.map(
+      (basePath) =>
+        `${basePath}/costing/${encodeURIComponent(costingId)}/${encodeURIComponent(key)}`,
+    ),
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function getApprovalSubElementByToken(approvalToken) {
+  return requestWithFallback(
+    RFQC_SUB_ELEMENT_BASE_PATHS.map(
+      (basePath) => `${basePath}/approval/${encodeURIComponent(approvalToken)}`,
+    ),
+    {
+      method: 'GET',
+    },
+  )
+}
+
+export function approveSubElementByToken(approvalToken, payload) {
+  return requestWithFallback(
+    RFQC_SUB_ELEMENT_BASE_PATHS.map(
+      (basePath) => `${basePath}/approval/${encodeURIComponent(approvalToken)}`,
+    ),
+    {
+      method: 'PATCH',
+      body: JSON.stringify(buildApproveSubElementPayload(payload)),
+    },
+  )
 }

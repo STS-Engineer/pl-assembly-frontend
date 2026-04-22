@@ -1,7 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useRef, useState } from 'react'
 import { useRouter } from '../router/AppRouter'
 import { routes } from '../router/routes'
-import { changePassword } from '../../services/api'
+import {
+  changePassword,
+  getNotifications,
+  markAllNotificationsAsRead,
+} from '../../services/api'
 import { clearSession, getSession } from '../../services/session'
 import WorkspaceSidebar from '../workspace/WorkspaceSidebar'
 import {
@@ -13,7 +17,6 @@ import WorkspaceCostingPage from './WorkspaceCostingPage'
 import WorkspaceProductDevelopmentPage from './WorkspaceProductDevelopmentPage'
 import '../workspace/workspace.css'
 
-const workspaceNotifications = []
 const workspacePageComponents = {
   dashboard: WorkspaceDashboardPage,
   costing: WorkspaceCostingPage,
@@ -145,10 +148,66 @@ function decodeAccessTokenSubject(token) {
   }
 }
 
+function formatNotificationTime(timestamp) {
+  if (!timestamp) {
+    return 'Just now'
+  }
+
+  const parsedDate = new Date(timestamp)
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return 'Just now'
+  }
+
+  const now = Date.now()
+  const diffInMinutes = Math.round((parsedDate.getTime() - now) / 60000)
+  const absoluteDiffInMinutes = Math.abs(diffInMinutes)
+
+  if (absoluteDiffInMinutes < 1) {
+    return 'Just now'
+  }
+
+  if (absoluteDiffInMinutes < 60) {
+    return `${absoluteDiffInMinutes} min ago`
+  }
+
+  if (absoluteDiffInMinutes < 60 * 24) {
+    return `${Math.round(absoluteDiffInMinutes / 60)} h ago`
+  }
+
+  return new Intl.DateTimeFormat('en', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsedDate)
+}
+
+function normalizeNotificationItems(items = []) {
+  return (Array.isArray(items) ? items : []).map((notification) => ({
+    ...notification,
+    read: Boolean(notification?.read),
+    timeLabel: formatNotificationTime(notification?.created_at),
+  }))
+}
+
+function getNotificationActionTarget(actionUrl) {
+  const normalizedActionUrl = String(actionUrl || '').trim().toLowerCase()
+
+  if (!normalizedActionUrl) {
+    return undefined
+  }
+
+  return normalizedActionUrl.startsWith('http') ? '_blank' : undefined
+}
+
 export default function WorkspacePage({ routeParams = {} }) {
   const [session, setSession] = useState(() => getSession())
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false)
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false)
+  const [workspaceNotifications, setWorkspaceNotifications] = useState([])
+  const [isNotificationPanelLoading, setIsNotificationPanelLoading] = useState(false)
+  const [isMarkingNotificationsAsRead, setIsMarkingNotificationsAsRead] = useState(false)
   const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState(false)
   const [isChangePasswordSubmitting, setIsChangePasswordSubmitting] = useState(false)
   const [changePasswordFeedback, setChangePasswordFeedback] = useState('')
@@ -167,6 +226,55 @@ export default function WorkspacePage({ routeParams = {} }) {
     : workspaceSections[0].id
   const ActiveWorkspacePage = workspacePageComponents[activeSectionId]
 
+  const loadNotifications = useEffectEvent(async ({ silent = false } = {}) => {
+    const currentSession = getSession()
+
+    if (!currentSession?.token) {
+      setWorkspaceNotifications([])
+      return
+    }
+
+    if (!silent) {
+      setIsNotificationPanelLoading(true)
+    }
+
+    try {
+      const response = await getNotifications(currentSession.token, 20)
+      setWorkspaceNotifications(normalizeNotificationItems(response?.items))
+    } catch (error) {
+      console.error('[WorkspacePage] Unable to load notifications:', error)
+    } finally {
+      if (!silent) {
+        setIsNotificationPanelLoading(false)
+      }
+    }
+  })
+
+  const markNotificationsAsRead = useEffectEvent(async () => {
+    const currentSession = getSession()
+
+    if (!currentSession?.token) {
+      return
+    }
+
+    setIsMarkingNotificationsAsRead(true)
+    setWorkspaceNotifications((currentNotifications) =>
+      currentNotifications.map((notification) => ({
+        ...notification,
+        read: true,
+      })),
+    )
+
+    try {
+      await markAllNotificationsAsRead(currentSession.token)
+    } catch (error) {
+      console.error('[WorkspacePage] Unable to mark notifications as read:', error)
+      await loadNotifications({ silent: true })
+    } finally {
+      setIsMarkingNotificationsAsRead(false)
+    }
+  })
+
   useEffect(() => {
     const currentSession = getSession()
 
@@ -177,6 +285,23 @@ export default function WorkspacePage({ routeParams = {} }) {
 
     setSession(currentSession)
   }, [navigate])
+
+  useEffect(() => {
+    if (!session?.token) {
+      setWorkspaceNotifications([])
+      return undefined
+    }
+
+    loadNotifications()
+
+    const intervalId = window.setInterval(() => {
+      loadNotifications({ silent: true })
+    }, 30000)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [loadNotifications, session?.token])
 
   useEffect(() => {
     if (!session?.token) {
@@ -252,6 +377,24 @@ export default function WorkspacePage({ routeParams = {} }) {
     setIsNotificationPanelOpen(false)
   }, [activeSectionId])
 
+  useEffect(() => {
+    if (!isNotificationPanelOpen) {
+      return undefined
+    }
+
+    if (workspaceNotifications.every((notification) => notification.read)) {
+      return undefined
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      markNotificationsAsRead()
+    }, 700)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+    }
+  }, [isNotificationPanelOpen, markNotificationsAsRead, workspaceNotifications])
+
   if (!session?.token) {
     return null
   }
@@ -268,6 +411,16 @@ export default function WorkspacePage({ routeParams = {} }) {
   const unreadNotificationCount = workspaceNotifications.filter(
     (notification) => !notification.read,
   ).length
+  const hasNotifications = workspaceNotifications.length > 0
+  const isNotificationPanelShowingLoadingState =
+    isNotificationPanelLoading && !hasNotifications
+  const notificationPanelStatusLabel = isNotificationPanelShowingLoadingState
+    ? 'Loading notifications'
+    : unreadNotificationCount > 0
+    ? `${unreadNotificationCount} unread`
+    : hasNotifications
+    ? 'Recent notifications'
+    : 'No notifications yet'
 
   const handleSignOut = () => {
     setIsAccountMenuOpen(false)
@@ -409,8 +562,13 @@ export default function WorkspacePage({ routeParams = {} }) {
                 aria-expanded={isNotificationPanelOpen}
                 title="Notifications"
                 onClick={() => {
+                  const nextPanelState = !isNotificationPanelOpen
                   setIsAccountMenuOpen(false)
-                  setIsNotificationPanelOpen((currentValue) => !currentValue)
+                  setIsNotificationPanelOpen(nextPanelState)
+
+                  if (nextPanelState) {
+                    loadNotifications({ silent: true })
+                  }
                 }}
               >
                 <span className="workspace-notification-button__icon">
@@ -422,39 +580,66 @@ export default function WorkspacePage({ routeParams = {} }) {
               </button>
 
               {isNotificationPanelOpen ? (
-                <div className="workspace-notification-panel" role="dialog" aria-label="Notifications">
+                <div
+                  className="workspace-notification-panel"
+                  role="dialog"
+                  aria-label="Notifications"
+                  aria-busy={isNotificationPanelShowingLoadingState}
+                >
                   <div className="workspace-notification-panel__header">
                     <div className="workspace-notification-panel__copy">
                       <strong>Notifications</strong>
-                      <span>
-                        {unreadNotificationCount > 0
-                          ? `${unreadNotificationCount} unread`
-                          : 'No new notifications'}
-                      </span>
+                      <span>{notificationPanelStatusLabel}</span>
                     </div>
                   </div>
 
-                  {workspaceNotifications.length > 0 ? (
-                    <div className="workspace-notification-panel__list">
-                      {workspaceNotifications.map((notification) => (
-                        <article
-                          key={notification.id}
-                          className={`workspace-notification-card${
-                            notification.read ? '' : ' workspace-notification-card--unread'
-                          }`}
-                        >
-                          <strong>{notification.title}</strong>
-                          <p>{notification.message}</p>
-                          <span>{notification.timeLabel}</span>
-                        </article>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="workspace-notification-panel__empty">
-                      <strong>No notifications yet</strong>
-                      <p>Your notifications will appear here when this feature is connected to real data.</p>
-                    </div>
-                  )}
+                  <div className="workspace-notification-panel__content">
+                    {isNotificationPanelShowingLoadingState ? (
+                      <div className="workspace-notification-panel__state workspace-notification-panel__state--loading">
+                        <strong>Loading notifications</strong>
+                        <p>Please wait while your latest notifications are fetched.</p>
+                      </div>
+                    ) : hasNotifications ? (
+                      <div className="workspace-notification-panel__list">
+                        {workspaceNotifications.map((notification) => (
+                          <article
+                            key={notification.id}
+                            className={`workspace-notification-card${
+                              notification.read ? '' : ' workspace-notification-card--unread'
+                            }`}
+                          >
+                            <strong>{notification.title}</strong>
+                            <p>{notification.message}</p>
+                            {notification.body ? (
+                              <p className="workspace-notification-card__body">{notification.body}</p>
+                            ) : null}
+                            <div className="workspace-notification-card__footer">
+                              <span>
+                                {isMarkingNotificationsAsRead && !notification.read
+                                  ? 'Marking as read...'
+                                  : notification.timeLabel}
+                              </span>
+                              {notification.action_url ? (
+                                <a
+                                  className="workspace-notification-card__action"
+                                  href={notification.action_url}
+                                  target={getNotificationActionTarget(notification.action_url)}
+                                  rel="noreferrer"
+                                >
+                                  {notification.action_label || 'Open'}
+                                </a>
+                              ) : null}
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="workspace-notification-panel__state workspace-notification-panel__state--empty">
+                        <strong>No notifications yet</strong>
+                        <p>Your email-triggered notifications will appear here.</p>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -525,7 +710,9 @@ export default function WorkspacePage({ routeParams = {} }) {
           <WorkspaceSidebar sections={workspaceSections} activeSectionId={activeSectionId} />
 
           <div className="workspace-content">
-            <ActiveWorkspacePage />
+            <div className="workspace-content__inner">
+              <ActiveWorkspacePage currentUser={user} />
+            </div>
           </div>
         </div>
       </div>

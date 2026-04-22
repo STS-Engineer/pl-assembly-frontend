@@ -2,6 +2,7 @@ import { AppRouter, Route, RouteSwitch } from './components/router/AppRouter'
 import { routes } from './components/router/routes'
 import ForgotPasswordPage from './components/pages/ForgotPasswordPage'
 import ResetPasswordPage from './components/pages/ResetPasswordPage'
+import ApproveSubElementPage from './components/pages/ApproveSubElementPage'
 import SignInPage from './components/pages/SignInPage'
 import SignUpPage from './components/pages/SignUpPage'
 import WorkspacePage from './components/pages/WorkspacePage'
@@ -17,6 +18,7 @@ function App() {
         <Route path={routes.workspace} element={<WorkspacePage />} />
         <Route path={routes.forgotPassword} element={<ForgotPasswordPage />} />
         <Route path={routes.resetPassword} element={<ResetPasswordPage />} />
+        <Route path={routes.approveSubElement} element={<ApproveSubElementPage />} />
         <Route path="*" element={<SignInPage />} />
       </RouteSwitch>
     </AppRouter>

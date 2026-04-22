@@ -1,9 +1,29 @@
 import { useEffect, useState } from 'react'
-import { createRfqCosting, getRfqs, updateRfqCosting } from '../../services/api'
+import {
+  createRfqCosting,
+  getUsers,
+  getRfqs,
+  getRfqCostingSubElementOptions,
+  getRfqCostingSubElementsByCostingIds,
+  getRfqCostingSubElements,
+  isRfqCostingSubElementApiEnabled,
+  updateRfqCosting,
+  updateRfqCostingSubElement,
+} from '../../services/api'
 import CostingBoardHeader from './CostingBoardHeader'
 import CostingBoardState from './CostingBoardState'
+import CostingToast from './CostingToast'
 import CostingProjectCard from './CostingProjectCard'
+import CostingPilotAssignmentModal from './CostingPilotAssignmentModal'
 import CostingStageModal, { createEmptyCostingForm } from './CostingStageModal'
+import CostingSubElementModal from './CostingSubElementModal'
+import {
+  COSTING_SUB_ELEMENT_STATUS_OPTIONS,
+  createEmptyCostingSubElementForm,
+  getCostingSubElementTemplate,
+  normalizeCostingSubElementStatusOptions,
+  normalizeCostingSubElements,
+} from './costingSubElements'
 
 const DATE_FORMATTER = new Intl.DateTimeFormat('en-GB', {
   day: '2-digit',
@@ -46,6 +66,12 @@ const COSTING_STAGES = [
     description: 'Final costing step before project closure.',
   },
 ]
+
+const DEFAULT_SUB_ELEMENT_OPTIONS = {
+  statusOptions: COSTING_SUB_ELEMENT_STATUS_OPTIONS,
+}
+
+let cachedSubElementOptions = null
 
 function getOptionalText(value) {
   const normalizedValue = String(value ?? '').trim()
@@ -324,15 +350,21 @@ function getCostingTypeTone(type) {
 }
 
 function getCostingStageKey(type) {
-  if (type === 'Initial Costing') {
+  const normalizedType = String(type || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+
+  if (normalizedType.includes('initial')) {
     return 'initial'
   }
 
-  if (type === 'Improved Costing') {
+  if (normalizedType.includes('improved')) {
     return 'improved'
   }
 
-  if (type === 'Last Call Costing') {
+  if (normalizedType.includes('last') && normalizedType.includes('call')) {
     return 'last-call'
   }
 
@@ -362,6 +394,7 @@ function getStageStatus(completedRfqCount, totalRfqCount) {
 
 function normalizeCosting(costing) {
   const type = getDisplayText(costing?.type, 'Costing')
+  const stageKey = getCostingStageKey(type)
   const reference = getDisplayText(costing?.reference, 'No reference')
   const productFamily = getDisplayText(costing?.product_family ?? costing?.productFamily, 'TBD')
   const plant = getDisplayText(costing?.plant ?? costing?.delivery_plant, 'Not specified')
@@ -370,10 +403,18 @@ function normalizeCosting(costing) {
     'Not dated',
   )
 
+  // Always normalize sub-elements, regardless of stage key
+  const rawSubElements = costing?.subElements ?? costing?.sub_elements
+  const normalizedSubElements = normalizeCostingSubElements(rawSubElements)
+  const subElements = normalizedSubElements.map((subElement) => ({
+    ...subElement,
+    dueDateLabel: formatDateValue(subElement.dueDate, 'Not planned'),
+  }))
+
   return {
     id: String(costing?.id ?? reference),
     type,
-    stageKey: getCostingStageKey(type),
+    stageKey,
     typeTone: getCostingTypeTone(type),
     reference,
     productFamily,
@@ -381,6 +422,7 @@ function normalizeCosting(costing) {
     plant,
     createdAt: costing?.createdAt ?? costing?.created_at ?? costing?.created_date ?? null,
     createdDate,
+    subElements,
     summary: formatCompactList([productFamily, plant], 'Linked costing entry'),
   }
 }
@@ -557,16 +599,344 @@ function getAwaitingCostingCount(projects) {
   )
 }
 
-export default function CostingBoardProfessional() {
+function getRoleLookupValue(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+}
+
+function hasUserRoleKeyword(userRole, keyword) {
+  return getRoleLookupValue(userRole).includes(getRoleLookupValue(keyword))
+}
+
+function getCurrentUserDisplayName(user = {}) {
+  return getDisplayText(user?.full_name ?? user?.fullName ?? user?.email, 'Workspace user')
+}
+
+function getCurrentUserRole(user = {}) {
+  return getDisplayText(user?.role, 'Connected user')
+}
+
+function getCurrentUserBackendRole(user = {}) {
+  const normalizedRole = getRoleLookupValue(user?.role)
+
+  if (!normalizedRole || normalizedRole === 'connected user') {
+    return 'user'
+  }
+
+  if (normalizedRole.includes('admin')) {
+    return 'admin'
+  }
+
+  if (normalizedRole.includes('manager') || normalizedRole.includes('approver')) {
+    return 'manager'
+  }
+
+  if (normalizedRole.includes('pilot')) {
+    return 'pilot'
+  }
+
+  if (normalizedRole === 'pm' || normalizedRole.includes('project manager')) {
+    return 'pm'
+  }
+
+  if (normalizedRole === 'pl' || normalizedRole.includes('product line')) {
+    return 'pl'
+  }
+
+  if (normalizedRole.includes('sales')) {
+    return 'sales'
+  }
+
+  return 'user'
+}
+
+function getSubElementPilotValue(subElement, currentUser) {
+  const template = getCostingSubElementTemplate(subElement?.key)
+  const storedPilot = getOptionalText(subElement?.pilot)
+  const defaultPilot = template?.defaultPilot || 'Project pilot'
+  const normalizedCurrentUserRole = getRoleLookupValue(currentUser?.role)
+
+  if (storedPilot && storedPilot.toLowerCase() !== defaultPilot.toLowerCase()) {
+    return storedPilot
+  }
+
+  if (
+    !normalizedCurrentUserRole ||
+    normalizedCurrentUserRole === 'connected user' ||
+    hasUserRoleKeyword(currentUser?.role, 'pilot')
+  ) {
+    return getCurrentUserDisplayName(currentUser)
+  }
+
+  return storedPilot || defaultPilot
+}
+
+function getSubElementApproverValue(subElement, currentUser) {
+  const template = getCostingSubElementTemplate(subElement?.key)
+  const storedApprover = getOptionalText(subElement?.approver)
+  const defaultApprover = template?.defaultApprover || 'Manager'
+
+  if (storedApprover && storedApprover.toLowerCase() !== defaultApprover.toLowerCase()) {
+    return storedApprover
+  }
+
+  if (
+    ['manager', 'approver', 'admin'].some((keyword) =>
+      hasUserRoleKeyword(currentUser?.role, keyword),
+    )
+  ) {
+    return getCurrentUserDisplayName(currentUser)
+  }
+
+  return storedApprover || defaultApprover
+}
+
+function getIdentityLookupValues(source = {}) {
+  return Array.from(
+    new Set(
+      [
+        source?.id,
+        source?.email,
+        source?.full_name,
+        source?.fullName,
+        source?.name,
+      ]
+        .map((value) => String(value ?? '').trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  )
+}
+
+function getIdentityLookupValuesFromValue(value) {
+  const normalizedValue = String(value ?? '').trim().toLowerCase()
+  return normalizedValue ? [normalizedValue] : []
+}
+
+function isApprovedSubElement(subElement) {
+  return String(subElement?.approvalStatus ?? subElement?.approval_status ?? '')
+    .trim()
+    .toLowerCase() === 'approved'
+}
+
+function isCurrentUserAssignedManager(currentUser, subElement) {
+  const currentUserLookupValues = getIdentityLookupValues(currentUser)
+  const managerLookupValues = [
+    ...(Array.isArray(subElement?.managers) ? subElement.managers : []).flatMap((manager) =>
+      getIdentityLookupValues(manager),
+    ),
+    ...getIdentityLookupValuesFromValue(subElement?.approver),
+  ]
+
+  if (currentUserLookupValues.length === 0 || managerLookupValues.length === 0) {
+    return false
+  }
+
+  return currentUserLookupValues.some((lookupValue) => managerLookupValues.includes(lookupValue))
+}
+
+function isCurrentUserAssignedPilot(currentUser, subElement) {
+  const currentUserLookupValues = getIdentityLookupValues(currentUser)
+  const pilotLookupValues = getIdentityLookupValuesFromValue(subElement?.pilot)
+
+  if (currentUserLookupValues.length === 0 || pilotLookupValues.length === 0) {
+    return false
+  }
+
+  return currentUserLookupValues.some((lookupValue) => pilotLookupValues.includes(lookupValue))
+}
+
+function getPilotAssignmentValue(pilotUser, fullNameCounts) {
+  const fullName = getOptionalText(pilotUser?.full_name ?? pilotUser?.fullName)
+  const email = getOptionalText(pilotUser?.email)
+  const normalizedFullName = String(fullName || '').toLowerCase()
+
+  if (fullName && fullNameCounts.get(normalizedFullName) === 1) {
+    return fullName
+  }
+
+  return email || fullName || String(pilotUser?.id ?? '')
+}
+
+function getPilotOptionLabel(pilotUser) {
+  const fullName = getOptionalText(pilotUser?.full_name ?? pilotUser?.fullName)
+  const email = getOptionalText(pilotUser?.email)
+  const labelParts = [fullName || email || `User ${pilotUser?.id ?? ''}`]
+
+  if (fullName && email) {
+    labelParts.push(email)
+  }
+
+  return labelParts.join(' | ')
+}
+
+function getPilotSelectionOptions(users, subElementKey) {
+  const candidateUsers = Array.isArray(users) ? users : []
+  const fullNameCounts = candidateUsers.reduce((counts, user) => {
+    const fullName = getOptionalText(user?.full_name ?? user?.fullName)
+
+    if (!fullName) {
+      return counts
+    }
+
+    const normalizedFullName = fullName.toLowerCase()
+    counts.set(normalizedFullName, (counts.get(normalizedFullName) || 0) + 1)
+    return counts
+  }, new Map())
+  const pilotOptionsMap = new Map()
+
+  candidateUsers.forEach((pilotUser) => {
+    const selectionValue =
+      getOptionalText(pilotUser?.email) ||
+      getOptionalText(pilotUser?.id) ||
+      getPilotAssignmentValue(pilotUser, fullNameCounts)
+
+    if (!selectionValue || pilotOptionsMap.has(selectionValue)) {
+      return
+    }
+
+    pilotOptionsMap.set(selectionValue, {
+      selectionValue,
+      id: pilotUser?.id ?? null,
+      assignmentValue: getPilotAssignmentValue(pilotUser, fullNameCounts),
+      fullName: getOptionalText(pilotUser?.full_name ?? pilotUser?.fullName),
+      email: getOptionalText(pilotUser?.email),
+      role: getOptionalText(pilotUser?.role),
+      label: getPilotOptionLabel(pilotUser),
+    })
+  })
+
+  return Array.from(pilotOptionsMap.values()).sort((leftOption, rightOption) =>
+    leftOption.label.localeCompare(rightOption.label),
+  )
+}
+
+function resolveInitialPilotSelectionValue(subElement, pilotOptions) {
+  const template = getCostingSubElementTemplate(subElement?.key)
+  const defaultPilot = getOptionalText(template?.defaultPilot) || 'Project pilot'
+  const currentPilot = getOptionalText(subElement?.pilot)
+
+  if (!currentPilot || currentPilot.toLowerCase() === defaultPilot.toLowerCase()) {
+    return ''
+  }
+
+  const matchedPilot = pilotOptions.find(
+    (pilotOption) =>
+      currentPilot === pilotOption.assignmentValue ||
+      currentPilot === pilotOption.fullName ||
+      currentPilot === pilotOption.email,
+  )
+
+  return matchedPilot?.selectionValue || ''
+}
+
+async function attachInitialCostingSubElements(rfqs, currentRole) {
+  const sourceRfqs = Array.isArray(rfqs) ? rfqs : []
+  const initialCostingIds = sourceRfqs.flatMap((rfq) =>
+    (Array.isArray(rfq?.costings) ? rfq.costings : [])
+      .filter((costing) => getCostingStageKey(costing?.type) === 'initial' && costing?.id)
+      .map((costing) => String(costing.id)),
+  )
+
+  if (initialCostingIds.length === 0) {
+    return sourceRfqs
+  }
+
+  try {
+    const response = await getRfqCostingSubElementsByCostingIds(initialCostingIds, currentRole)
+    const itemsByCostingId =
+      response?.items_by_costing_id ?? response?.itemsByCostingId ?? {}
+
+    return sourceRfqs.map((rfq) => ({
+      ...rfq,
+      costings: (Array.isArray(rfq?.costings) ? rfq.costings : []).map((costing) => {
+        const stageKey = getCostingStageKey(costing?.type)
+
+        if (stageKey !== 'initial' || !costing?.id) {
+          return costing
+        }
+
+        return {
+          ...costing,
+          subElements: Array.isArray(itemsByCostingId[String(costing.id)])
+            ? itemsByCostingId[String(costing.id)]
+            : [],
+        }
+      }),
+    }))
+  } catch (bulkError) {
+    if (bulkError?.statusCode !== 404) {
+      throw bulkError
+    }
+  }
+
+  return Promise.all(
+    sourceRfqs.map(async (rfq) => {
+      const sourceCostings = Array.isArray(rfq?.costings) ? rfq.costings : []
+
+      const nextCostings = await Promise.all(
+        sourceCostings.map(async (costing) => {
+          const stageKey = getCostingStageKey(costing?.type)
+          
+          if (stageKey !== 'initial' || !costing?.id) {
+            return costing
+          }
+
+          try {
+            const response = await getRfqCostingSubElements(costing.id, currentRole)
+
+            // Handle both { items: [...] } and direct array responses
+            const subElementsArray = Array.isArray(response) ? response : response?.items ?? []
+
+            return {
+              ...costing,
+              subElements: subElementsArray,
+            }
+          } catch (err) {
+            console.error(
+              `[attachInitialCostingSubElements] Failed to fetch sub-elements for costing ${costing.id}:`,
+              err,
+            )
+            return costing
+          }
+        }),
+      )
+
+      return {
+        ...rfq,
+        costings: nextCostings,
+      }
+    }),
+  )
+}
+
+export default function CostingBoardProfessional({ currentUser = {} }) {
   const [projects, setProjects] = useState([])
   const [expandedProjectIds, setExpandedProjectIds] = useState([])
   const [activeCostingModal, setActiveCostingModal] = useState(null)
   const [costingForm, setCostingForm] = useState(() => createEmptyCostingForm())
   const [costingFormError, setCostingFormError] = useState('')
   const [isSubmittingCosting, setIsSubmittingCosting] = useState(false)
+  const [activeSubElementModal, setActiveSubElementModal] = useState(null)
+  const [subElementForm, setSubElementForm] = useState(() => createEmptyCostingSubElementForm())
+  const [subElementFormError, setSubElementFormError] = useState('')
+  const [isSubmittingSubElement, setIsSubmittingSubElement] = useState(false)
+  const [activePilotAssignmentModal, setActivePilotAssignmentModal] = useState(null)
+  const [pilotUsers, setPilotUsers] = useState([])
+  const [selectedPilotValue, setSelectedPilotValue] = useState('')
+  const [pilotAssignmentError, setPilotAssignmentError] = useState('')
+  const [isLoadingPilotUsers, setIsLoadingPilotUsers] = useState(false)
+  const [isSubmittingPilotAssignment, setIsSubmittingPilotAssignment] = useState(false)
+  const [pilotAssignmentFeedback, setPilotAssignmentFeedback] = useState('')
+  const [pilotAssignmentFeedbackType, setPilotAssignmentFeedbackType] = useState('success')
+  const [subElementOptions, setSubElementOptions] = useState(() => DEFAULT_SUB_ELEMENT_OPTIONS)
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
+  const currentUserBackendRole = getCurrentUserBackendRole(currentUser)
+  const isSubElementApiEnabled = isRfqCostingSubElementApiEnabled()
 
   useEffect(() => {
     let isActive = true
@@ -576,21 +946,46 @@ export default function CostingBoardProfessional() {
       setErrorMessage('')
 
       try {
-        const response = await getRfqs()
-        const nextProjects = groupRfqsIntoProjects(Array.isArray(response) ? response : [])
+        const rfqResponse = await getRfqs()
+        let nextRfqs = Array.isArray(rfqResponse) ? rfqResponse : []
+        let nextSubElementOptions = cachedSubElementOptions || DEFAULT_SUB_ELEMENT_OPTIONS
+
+        if (isSubElementApiEnabled) {
+          try {
+            const [subElementOptionsResponse, rfqsWithSubElements] = await Promise.all([
+              cachedSubElementOptions ? Promise.resolve(null) : getRfqCostingSubElementOptions(),
+              attachInitialCostingSubElements(nextRfqs, currentUserBackendRole),
+            ])
+
+            nextRfqs = rfqsWithSubElements
+
+            if (subElementOptionsResponse) {
+              nextSubElementOptions = {
+                statusOptions: normalizeCostingSubElementStatusOptions(
+                  subElementOptionsResponse?.status_options,
+                ),
+              }
+              cachedSubElementOptions = nextSubElementOptions
+            }
+          } catch (error) {
+            console.warn('[loadRfqs] Sub-element API error:', error)
+            if (error?.statusCode !== 404) {
+              throw error
+            }
+          }
+        }
+
+        const nextProjects = groupRfqsIntoProjects(nextRfqs)
 
         if (!isActive) {
           return
         }
 
+        setSubElementOptions(nextSubElementOptions)
         setProjects(nextProjects)
         setExpandedProjectIds((currentIds) => {
           const availableIds = nextProjects.map((project) => project.id)
-          const nextExpandedIds = currentIds.filter((projectId) =>
-            availableIds.includes(projectId),
-          )
-
-          return nextExpandedIds.length > 0 ? nextExpandedIds : availableIds.slice(0, 1)
+          return currentIds.filter((projectId) => availableIds.includes(projectId))
         })
       } catch (error) {
         if (!isActive) {
@@ -598,6 +993,7 @@ export default function CostingBoardProfessional() {
         }
 
         setProjects([])
+        setSubElementOptions(DEFAULT_SUB_ELEMENT_OPTIONS)
         setExpandedProjectIds([])
         setErrorMessage(error.message || 'Unable to load RFQs from backend.')
       } finally {
@@ -612,7 +1008,7 @@ export default function CostingBoardProfessional() {
     return () => {
       isActive = false
     }
-  }, [reloadKey])
+  }, [currentUserBackendRole, isSubElementApiEnabled, reloadKey])
 
   const totalProjects = projects.length
   const totalRfqs = projects.reduce((count, project) => count + getProjectRfqCount(project), 0)
@@ -685,6 +1081,121 @@ export default function CostingBoardProfessional() {
     setCostingFormError('')
   }
 
+  const closeSubElementModal = ({ force = false } = {}) => {
+    if (isSubmittingSubElement && !force) {
+      return
+    }
+
+    setActiveSubElementModal(null)
+    setSubElementForm(createEmptyCostingSubElementForm())
+    setSubElementFormError('')
+  }
+
+  const closePilotAssignmentModal = ({ force = false } = {}) => {
+    if (isSubmittingPilotAssignment && !force) {
+      return
+    }
+
+    setActivePilotAssignmentModal(null)
+    setSelectedPilotValue('')
+    setPilotAssignmentError('')
+  }
+
+  const openSubElementModal = (project, entry, subElement, mode) => {
+    setActiveSubElementModal({
+      mode,
+      projectId: project.id,
+      projectTitle: project.title,
+      costingId: entry.id,
+      costingReference: entry.reference,
+      stageLabel: entry.stageLabel,
+      subElementKey: subElement.key,
+      subElementTitle: subElement.title,
+      pilotRoleLabel: subElement.pilotRoleLabel,
+      pilot:
+        mode === 'edit' ? getSubElementPilotValue(subElement, currentUser) : subElement.pilot,
+      approver:
+        mode === 'edit'
+          ? getSubElementApproverValue(subElement, currentUser)
+          : subElement.approver,
+      subElements: entry.subElements,
+    })
+    setSubElementForm(createEmptyCostingSubElementForm(subElement))
+    setSubElementFormError('')
+  }
+
+  const openFillSubElementModal = (project, entry, subElement) => {
+    if (!canFillSubElement(subElement) || isApprovedSubElement(subElement)) {
+      return
+    }
+
+    openSubElementModal(project, entry, subElement, 'edit')
+  }
+
+  const openViewSubElementModal = (project, entry, subElement) => {
+    openSubElementModal(project, entry, subElement, 'view')
+  }
+
+  const openPilotAssignmentModal = async (project, entry, subElement) => {
+    if (!canAssignPilot(subElement)) {
+      return
+    }
+
+    const managerName =
+      getDisplayText(
+        subElement?.managers?.[0]?.full_name ??
+          subElement?.managers?.[0]?.fullName ??
+          subElement?.managers?.[0]?.email,
+        getOptionalText(subElement?.approver) || 'Manager',
+      )
+
+    setActivePilotAssignmentModal({
+      projectId: project.id,
+      projectTitle: project.title,
+      costingId: entry.id,
+      costingReference: entry.reference,
+      stageLabel: entry.stageLabel,
+      subElementKey: subElement.key,
+      subElementTitle: subElement.title,
+      currentPilot:
+        getOptionalText(subElement.pilot) && subElement.pilot !== 'Project pilot'
+          ? subElement.pilot
+          : '',
+      managerName,
+      subElement,
+      subElements: entry.subElements,
+    })
+    setPilotAssignmentError('')
+
+    const existingPilotOptions = getPilotSelectionOptions(pilotUsers, subElement.key)
+    setSelectedPilotValue(resolveInitialPilotSelectionValue(subElement, existingPilotOptions))
+
+    if (pilotUsers.length > 0) {
+      return
+    }
+
+    setIsLoadingPilotUsers(true)
+
+    try {
+      const response = await getUsers()
+      const nextPilotUsers = Array.isArray(response) ? response : response?.items ?? []
+      const nextPilotOptions = getPilotSelectionOptions(nextPilotUsers, subElement.key)
+
+      setPilotUsers(nextPilotUsers)
+      setSelectedPilotValue(resolveInitialPilotSelectionValue(subElement, nextPilotOptions))
+    } catch (error) {
+      setPilotAssignmentError(error.message || 'Unable to load the list of pilots.')
+    } finally {
+      setIsLoadingPilotUsers(false)
+    }
+  }
+
+  const canAssignPilot = (subElement) => isCurrentUserAssignedManager(currentUser, subElement)
+
+  const canFillSubElement = (subElement) =>
+    isCurrentUserAssignedManager(currentUser, subElement) ||
+    isCurrentUserAssignedPilot(currentUser, subElement)
+
   const handleCostingFormChange = (field, value) => {
     setCostingForm((currentForm) => ({
       ...currentForm,
@@ -732,8 +1243,242 @@ export default function CostingBoardProfessional() {
     }
   }
 
+  const handleSubElementFormChange = (field, value) => {
+    setSubElementForm((currentForm) => ({
+      ...currentForm,
+      [field]: value,
+    }))
+  }
+
+  const handlePilotAssignmentSubmit = async (event) => {
+    event.preventDefault()
+
+    if (!activePilotAssignmentModal) {
+      return
+    }
+
+    const availablePilotOptions = getPilotSelectionOptions(
+      pilotUsers,
+      activePilotAssignmentModal.subElementKey,
+    )
+    const selectedPilot =
+      availablePilotOptions.find((pilotOption) => pilotOption.selectionValue === selectedPilotValue) ||
+      null
+    const nextApprover = getSubElementApproverValue(
+      activePilotAssignmentModal.subElement,
+      currentUser,
+    )
+
+    if (!selectedPilot) {
+      setPilotAssignmentError('Please select a pilot before saving.')
+      return
+    }
+
+    setIsSubmittingPilotAssignment(true)
+    setPilotAssignmentError('')
+
+    try {
+      if (isSubElementApiEnabled) {
+        try {
+          await updateRfqCostingSubElement(
+            activePilotAssignmentModal.costingId,
+            activePilotAssignmentModal.subElementKey,
+            {
+              current_role: currentUserBackendRole,
+              pilot: selectedPilot.assignmentValue,
+              pilot_id: selectedPilot.id,
+              pilot_email: selectedPilot.email,
+              approver: nextApprover,
+              status: activePilotAssignmentModal.subElement.status,
+              approvalStatus: activePilotAssignmentModal.subElement.approvalStatus,
+              duration: activePilotAssignmentModal.subElement.duration,
+              dueDate: activePilotAssignmentModal.subElement.dueDate,
+            },
+          )
+        } catch (error) {
+          if (error?.statusCode !== 404) {
+            throw error
+          }
+
+          const nextSubElements = (activePilotAssignmentModal.subElements || []).map((subElement) =>
+            subElement.key === activePilotAssignmentModal.subElementKey
+              ? {
+                  ...subElement,
+                  pilot: selectedPilot.assignmentValue,
+                  approver: nextApprover,
+                }
+              : subElement,
+          )
+
+          await updateRfqCosting(activePilotAssignmentModal.costingId, {
+            sub_elements: nextSubElements.map((subElement) => ({
+              key: subElement.key,
+              title: subElement.title,
+              pilot: subElement.pilot,
+              approver: subElement.approver,
+              status: subElement.status,
+              approval_status: subElement.approvalStatus,
+              duration: subElement.duration,
+              due_date: subElement.dueDate,
+            })),
+          })
+        }
+      } else {
+        const nextSubElements = (activePilotAssignmentModal.subElements || []).map((subElement) =>
+          subElement.key === activePilotAssignmentModal.subElementKey
+            ? {
+                ...subElement,
+                pilot: selectedPilot.assignmentValue,
+                approver: nextApprover,
+              }
+            : subElement,
+        )
+
+        await updateRfqCosting(activePilotAssignmentModal.costingId, {
+          sub_elements: nextSubElements.map((subElement) => ({
+            key: subElement.key,
+            title: subElement.title,
+            pilot: subElement.pilot,
+            approver: subElement.approver,
+            status: subElement.status,
+            approval_status: subElement.approvalStatus,
+            duration: subElement.duration,
+            due_date: subElement.dueDate,
+          })),
+        })
+      }
+
+      closePilotAssignmentModal({ force: true })
+      setPilotAssignmentFeedback('Pilot assigned successfully.')
+      setPilotAssignmentFeedbackType('success')
+      setReloadKey((currentValue) => currentValue + 1)
+    } catch (error) {
+      const nextErrorMessage = error.message || 'Unable to assign the pilot.'
+      setPilotAssignmentError(nextErrorMessage)
+      setPilotAssignmentFeedback(nextErrorMessage)
+      setPilotAssignmentFeedbackType('error')
+    } finally {
+      setIsSubmittingPilotAssignment(false)
+    }
+  }
+
+  const handleSubElementSubmit = async (event) => {
+    event.preventDefault()
+
+    if (!activeSubElementModal || activeSubElementModal.mode === 'view') {
+      return
+    }
+
+    const normalizedDuration = String(subElementForm.duration ?? '').trim()
+
+    if (normalizedDuration && !/^\d+$/.test(normalizedDuration)) {
+      setSubElementFormError('Duration must be a whole number of days.')
+      return
+    }
+
+    setIsSubmittingSubElement(true)
+    setSubElementFormError('')
+
+    try {
+      if (isSubElementApiEnabled) {
+        try {
+          await updateRfqCostingSubElement(
+            activeSubElementModal.costingId,
+            activeSubElementModal.subElementKey,
+            {
+              current_role: currentUserBackendRole,
+              pilot: activeSubElementModal.pilot,
+              approver: activeSubElementModal.approver,
+              status: subElementForm.status,
+              approvalStatus: subElementForm.approvalStatus,
+              duration: normalizedDuration,
+              dueDate: subElementForm.dueDate,
+            },
+          )
+        } catch (error) {
+          if (error?.statusCode !== 404) {
+            throw error
+          }
+
+          const nextSubElements = (activeSubElementModal.subElements || []).map((subElement) =>
+            subElement.key === activeSubElementModal.subElementKey
+              ? {
+                  ...subElement,
+                  pilot: activeSubElementModal.pilot,
+                  approver: activeSubElementModal.approver,
+                  status: subElementForm.status,
+                  approvalStatus: subElementForm.approvalStatus,
+                  duration: normalizedDuration,
+                  dueDate: subElementForm.dueDate,
+                }
+              : subElement,
+          )
+
+          await updateRfqCosting(activeSubElementModal.costingId, {
+            sub_elements: nextSubElements.map((subElement) => ({
+              key: subElement.key,
+              title: subElement.title,
+              pilot: subElement.pilot,
+              approver: subElement.approver,
+              status: subElement.status,
+              approval_status: subElement.approvalStatus,
+              duration: subElement.duration,
+              due_date: subElement.dueDate,
+            })),
+          })
+        }
+      } else {
+        const nextSubElements = (activeSubElementModal.subElements || []).map((subElement) =>
+          subElement.key === activeSubElementModal.subElementKey
+            ? {
+                ...subElement,
+                pilot: activeSubElementModal.pilot,
+                approver: activeSubElementModal.approver,
+                status: subElementForm.status,
+                approvalStatus: subElementForm.approvalStatus,
+                duration: normalizedDuration,
+                dueDate: subElementForm.dueDate,
+              }
+            : subElement,
+        )
+
+        await updateRfqCosting(activeSubElementModal.costingId, {
+          sub_elements: nextSubElements.map((subElement) => ({
+            key: subElement.key,
+            title: subElement.title,
+            pilot: subElement.pilot,
+            approver: subElement.approver,
+            status: subElement.status,
+            approval_status: subElement.approvalStatus,
+            duration: subElement.duration,
+            due_date: subElement.dueDate,
+          })),
+        })
+      }
+
+      closeSubElementModal({ force: true })
+      setReloadKey((currentValue) => currentValue + 1)
+    } catch (error) {
+      setSubElementFormError(error.message || 'Unable to update the costing sub-element.')
+    } finally {
+      setIsSubmittingSubElement(false)
+    }
+  }
+
+  const activePilotOptions = getPilotSelectionOptions(
+    pilotUsers,
+    activePilotAssignmentModal?.subElementKey,
+  )
+
   return (
-    <section className="costing-simple" aria-label="Costing projects board">
+    <>
+      <CostingToast
+        feedback={pilotAssignmentFeedback}
+        feedbackType={pilotAssignmentFeedbackType}
+        onClose={() => setPilotAssignmentFeedback('')}
+      />
+
+      <section className="costing-simple" aria-label="Costing projects board">
       <CostingBoardHeader
         totalProjects={totalProjects}
         boardStats={boardStats}
@@ -787,6 +1532,11 @@ export default function CostingBoardProfessional() {
                 onToggle={() => toggleProject(project.id)}
                 onOpenStage={openCostingModal}
                 onEditCosting={openEditCostingModal}
+                canFillSubElement={canFillSubElement}
+                canAssignPilot={canAssignPilot}
+                onAssignPilot={openPilotAssignmentModal}
+                onFillSubElement={openFillSubElementModal}
+                onViewSubElement={openViewSubElementModal}
               />
             )
           })}
@@ -802,6 +1552,32 @@ export default function CostingBoardProfessional() {
         onSubmit={handleCostingSubmit}
         onFieldChange={handleCostingFormChange}
       />
-    </section>
+
+      <CostingSubElementModal
+        modal={activeSubElementModal}
+        form={subElementForm}
+        errorMessage={subElementFormError}
+        isSubmitting={isSubmittingSubElement}
+        statusOptions={subElementOptions.statusOptions}
+        onRequestClose={closeSubElementModal}
+        onSubmit={handleSubElementSubmit}
+        onFieldChange={handleSubElementFormChange}
+        costingId={activeSubElementModal?.costingId}
+        subElementKey={activeSubElementModal?.subElementKey}
+      />
+
+      <CostingPilotAssignmentModal
+        modal={activePilotAssignmentModal}
+        pilotOptions={activePilotOptions}
+        selectedPilotValue={selectedPilotValue}
+        isLoading={isLoadingPilotUsers}
+        isSubmitting={isSubmittingPilotAssignment}
+        errorMessage={pilotAssignmentError}
+        onRequestClose={closePilotAssignmentModal}
+        onPilotChange={setSelectedPilotValue}
+        onSubmit={handlePilotAssignmentSubmit}
+      />
+      </section>
+    </>
   )
 }

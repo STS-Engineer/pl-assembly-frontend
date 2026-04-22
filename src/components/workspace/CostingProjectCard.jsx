@@ -1,3 +1,6 @@
+import { useState } from 'react'
+import CostingSubElementCard from './CostingSubElementCard'
+
 function CostingPill({ children, tone = 'neutral' }) {
   return <span className={`costing-simple__pill costing-simple__pill--${tone}`}>{children}</span>
 }
@@ -32,7 +35,21 @@ export default function CostingProjectCard({
   onToggle,
   onOpenStage,
   onEditCosting,
+  canFillSubElement,
+  canAssignPilot,
+  onAssignPilot,
+  onFillSubElement,
+  onViewSubElement,
 }) {
+  const [expandedStages, setExpandedStages] = useState({})
+
+  const toggleSubElements = (stageKey, costingId) => {
+    const key = `${stageKey}-${costingId}`
+    setExpandedStages((prev) => ({
+      ...prev,
+      [key]: !prev[key],
+    }))
+  }
   return (
     <article
       className={`costing-simple__project costing-simple__project--${project.currencyTheme}`}
@@ -89,29 +106,61 @@ export default function CostingProjectCard({
                 const plant = entry.plant ?? entry.delivery_plant ?? 'Not specified'
                 const createdDate =
                   entry.createdDate ?? entry.createdAt ?? entry.created_at ?? 'Not dated'
+                const subElements = Array.isArray(entry.subElements) ? entry.subElements : []
 
                 return (
                   <article
                     key={`${entry.stageKey}-${entry.id}`}
                     className={`costing-simple__stage-line costing-simple__stage-line--${entry.stageKey}`}
                   >
-                    <div className="costing-simple__stage-line-main">
-                      <strong className="costing-simple__stage-line-title">
-                        {entry.stageLabel} {entry.reference}
-                      </strong>
+                    <div className="costing-simple__stage-line-top">
+                      <div className="costing-simple__stage-line-main">
+                        <strong className="costing-simple__stage-line-title">
+                          {entry.stageLabel} {entry.reference}
+                        </strong>
 
-                      <p className="costing-simple__stage-line-meta">
-                        {`Product family: ${productFamily} | Plant: ${plant} | Created date: ${createdDate}`}
-                      </p>
+                        <p className="costing-simple__stage-line-meta">
+                          {`Product family: ${productFamily} | Plant: ${plant} | Created date: ${createdDate}`}
+                        </p>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                        {subElements.length > 0 ? (
+                          <button
+                            type="button"
+                            className="button button-secondary costing-simple__stage-edit"
+                            onClick={() => toggleSubElements(entry.stageKey, entry.id)}
+                          >
+                            {expandedStages[`${entry.stageKey}-${entry.id}`]
+                              ? `Hide ${subElements.length} Steps`
+                              : `Show ${subElements.length} Steps`}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="button button-secondary costing-simple__stage-edit"
+                          onClick={() => onEditCosting(project, entry)}
+                        >
+                          Edit
+                        </button>
+                      </div>
                     </div>
 
-                    <button
-                      type="button"
-                      className="button button-secondary costing-simple__stage-edit"
-                      onClick={() => onEditCosting(project, entry)}
-                    >
-                      Edit
-                    </button>
+                    {expandedStages[`${entry.stageKey}-${entry.id}`] && subElements.length > 0 ? (
+                      <div className="costing-simple__sub-elements">
+                        {subElements.map((subElement) => (
+                          <CostingSubElementCard
+                            key={subElement.key}
+                            subElement={subElement}
+                            canFill={canFillSubElement?.(subElement) ?? false}
+                            canAssignPilot={canAssignPilot?.(subElement) ?? false}
+                            onAssignPilot={() => onAssignPilot(project, entry, subElement)}
+                            onFill={() => onFillSubElement(project, entry, subElement)}
+                            onView={() => onViewSubElement(project, entry, subElement)}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
                   </article>
                 )
               })}
