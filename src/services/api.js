@@ -123,6 +123,12 @@ async function request(path, options = {}) {
   const requestUrl = buildUrl(path)
   let response
 
+  console.log('[API] Sending request:', {
+    method: fetchOptions.method || 'GET',
+    url: requestUrl,
+    hasToken: !!token,
+  })
+
   try {
     response = await fetch(requestUrl, {
       ...fetchOptions,
@@ -133,6 +139,11 @@ async function request(path, options = {}) {
       },
     })
   } catch (error) {
+    console.error('[API] Network error:', {
+      url: requestUrl,
+      message: error.message,
+    })
+
     if (error instanceof TypeError) {
       throw new Error(
         `Unable to reach the backend at ${API_BASE_URL}. Please make sure the API server is running.`,
@@ -145,7 +156,21 @@ async function request(path, options = {}) {
   const data = await response.json().catch(() => null)
   const translatedMessage = translateApiMessage(data?.message)
 
+  console.log('[API] Response received:', {
+    status: response.status,
+    statusText: response.statusText,
+    url: requestUrl,
+    hasData: !!data,
+  })
+
   if (!response.ok) {
+    console.error('[API] HTTP error:', {
+      status: response.status,
+      statusText: response.statusText,
+      message: data?.message,
+      url: requestUrl,
+    })
+
     const error = new Error(translatedMessage || 'Request failed.')
     error.statusCode = response.status
     error.responseData = data
@@ -180,18 +205,40 @@ function buildQueryString(query = {}) {
 
 async function requestWithFallback(paths, options = {}) {
   let lastError = null
+  const pathArray = Array.isArray(paths) ? paths : [paths]
 
-  for (const path of paths) {
+  console.log('[API] requestWithFallback - Attempting paths:', pathArray)
+
+  for (const path of pathArray) {
     try {
-      return await request(path, options)
+      console.log(`[API] Trying path: ${path}`)
+      const result = await request(path, options)
+      console.log(`[API] Success with path: ${path}`)
+      return result
     } catch (error) {
       lastError = error
+      console.warn(`[API] Failed with path: ${path}`, {
+        statusCode: error?.statusCode,
+        message: error?.message,
+      })
 
+      // If it's not a 404, throw immediately (don't try other paths)
       if (error?.statusCode !== 404) {
+        console.error(`[API] Non-404 error, throwing immediately`, {
+          statusCode: error?.statusCode,
+          message: error?.message,
+          path,
+        })
         throw error
       }
     }
   }
+
+  console.error('[API] All fallback paths failed. Last error:', {
+    statusCode: lastError?.statusCode,
+    message: lastError?.message,
+    paths: pathArray,
+  })
 
   throw lastError || new Error('Request failed.')
 }
@@ -258,9 +305,10 @@ export function markAllNotificationsAsRead(token) {
   })
 }
 
-export function getUsers() {
+export function getUsers(token) {
   return request('/users', {
     method: 'GET',
+    token,
   })
 }
 
@@ -382,6 +430,33 @@ export function updateRfqCostingSubElement(costingId, key, payload) {
     ),
     {
       method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export function getRfqCostingSubElementConversation(costingId, key, token) {
+  return requestWithFallback(
+    RFQC_SUB_ELEMENT_BASE_PATHS.map(
+      (basePath) =>
+        `${basePath}/costing/${encodeURIComponent(costingId)}/${encodeURIComponent(key)}/conversation`,
+    ),
+    {
+      method: 'GET',
+      token,
+    },
+  )
+}
+
+export function createRfqCostingSubElementConversationMessage(costingId, key, payload, token) {
+  return requestWithFallback(
+    RFQC_SUB_ELEMENT_BASE_PATHS.map(
+      (basePath) =>
+        `${basePath}/costing/${encodeURIComponent(costingId)}/${encodeURIComponent(key)}/conversation`,
+    ),
+    {
+      method: 'POST',
+      token,
       body: JSON.stringify(payload),
     },
   )

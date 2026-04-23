@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from '../router/AppRouter'
 import { routes } from '../router/routes'
 import {
@@ -191,6 +191,21 @@ function normalizeNotificationItems(items = []) {
   }))
 }
 
+function normalizeNotificationsResponse(response = null) {
+  const normalizedItems = normalizeNotificationItems(
+    Array.isArray(response) ? response : response?.items,
+  )
+  const unreadCount = Number.parseInt(String(response?.unread_count ?? ''), 10)
+
+  return {
+    items: normalizedItems,
+    unreadCount:
+      Number.isInteger(unreadCount) && unreadCount >= 0
+        ? unreadCount
+        : normalizedItems.filter((notification) => !notification.read).length,
+  }
+}
+
 function getNotificationActionTarget(actionUrl) {
   const normalizedActionUrl = String(actionUrl || '').trim().toLowerCase()
 
@@ -201,11 +216,42 @@ function getNotificationActionTarget(actionUrl) {
   return normalizedActionUrl.startsWith('http') ? '_blank' : undefined
 }
 
+function getNotificationInternalAction(notification = {}) {
+  const metadata =
+    notification?.metadata && typeof notification.metadata === 'object'
+      ? notification.metadata
+      : {}
+  const actionType = String(metadata.action_type || '').trim()
+
+  if (actionType !== 'open-step-conversation') {
+    return null
+  }
+
+  const costingId = String(metadata.costing_id || '').trim()
+  const subElementKey = String(metadata.sub_element_key || '').trim()
+
+  if (!costingId || !subElementKey) {
+    return null
+  }
+
+  return {
+    type: actionType,
+    sectionId: String(metadata.section_id || 'costing').trim() || 'costing',
+    costingId,
+    costingReference: String(metadata.costing_reference || '').trim(),
+    stageLabel: String(metadata.stage_label || metadata.costing_type || 'Initial Costing').trim(),
+    subElementKey,
+    subElementTitle: String(metadata.sub_element_title || '').trim(),
+    projectTitle: String(metadata.project_display_name || '').trim(),
+  }
+}
+
 export default function WorkspacePage({ routeParams = {} }) {
-  const [session, setSession] = useState(() => getSession())
+  const [session] = useState(() => getSession())
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false)
   const [isNotificationPanelOpen, setIsNotificationPanelOpen] = useState(false)
   const [workspaceNotifications, setWorkspaceNotifications] = useState([])
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0)
   const [isNotificationPanelLoading, setIsNotificationPanelLoading] = useState(false)
   const [isMarkingNotificationsAsRead, setIsMarkingNotificationsAsRead] = useState(false)
   const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState(false)
@@ -215,6 +261,7 @@ export default function WorkspacePage({ routeParams = {} }) {
     useState('success')
   const [workspaceFeedback, setWorkspaceFeedback] = useState('')
   const [workspaceFeedbackType, setWorkspaceFeedbackType] = useState('success')
+  const [workspaceAction, setWorkspaceAction] = useState(null)
   const { navigate } = useRouter()
   const accountMenuRef = useRef(null)
   const notificationPanelRef = useRef(null)
@@ -226,11 +273,12 @@ export default function WorkspacePage({ routeParams = {} }) {
     : workspaceSections[0].id
   const ActiveWorkspacePage = workspacePageComponents[activeSectionId]
 
-  const loadNotifications = useEffectEvent(async ({ silent = false } = {}) => {
+  const loadNotifications = useCallback(async ({ silent = false } = {}) => {
     const currentSession = getSession()
 
     if (!currentSession?.token) {
       setWorkspaceNotifications([])
+      setUnreadNotificationCount(0)
       return
     }
 
@@ -240,7 +288,9 @@ export default function WorkspacePage({ routeParams = {} }) {
 
     try {
       const response = await getNotifications(currentSession.token, 20)
-      setWorkspaceNotifications(normalizeNotificationItems(response?.items))
+      const normalizedResponse = normalizeNotificationsResponse(response)
+      setWorkspaceNotifications(normalizedResponse.items)
+      setUnreadNotificationCount(normalizedResponse.unreadCount)
     } catch (error) {
       console.error('[WorkspacePage] Unable to load notifications:', error)
     } finally {
@@ -248,9 +298,9 @@ export default function WorkspacePage({ routeParams = {} }) {
         setIsNotificationPanelLoading(false)
       }
     }
-  })
+  }, [])
 
-  const markNotificationsAsRead = useEffectEvent(async () => {
+  const markNotificationsAsRead = useCallback(async () => {
     const currentSession = getSession()
 
     if (!currentSession?.token) {
@@ -258,6 +308,7 @@ export default function WorkspacePage({ routeParams = {} }) {
     }
 
     setIsMarkingNotificationsAsRead(true)
+    setUnreadNotificationCount(0)
     setWorkspaceNotifications((currentNotifications) =>
       currentNotifications.map((notification) => ({
         ...notification,
@@ -273,22 +324,18 @@ export default function WorkspacePage({ routeParams = {} }) {
     } finally {
       setIsMarkingNotificationsAsRead(false)
     }
-  })
+  }, [loadNotifications])
 
   useEffect(() => {
-    const currentSession = getSession()
-
-    if (!currentSession?.token) {
+    if (!session?.token) {
       navigate(routes.signIn)
-      return
     }
-
-    setSession(currentSession)
-  }, [navigate])
+  }, [navigate, session?.token])
 
   useEffect(() => {
     if (!session?.token) {
       setWorkspaceNotifications([])
+      setUnreadNotificationCount(0)
       return undefined
     }
 
@@ -300,6 +347,30 @@ export default function WorkspacePage({ routeParams = {} }) {
 
     return () => {
       window.clearInterval(intervalId)
+    }
+  }, [loadNotifications, session?.token])
+
+  useEffect(() => {
+    if (!session?.token) {
+      return undefined
+    }
+
+    function refreshNotificationsOnVisibility() {
+      if (document.visibilityState === 'visible') {
+        loadNotifications({ silent: true })
+      }
+    }
+
+    function refreshNotificationsOnFocus() {
+      loadNotifications({ silent: true })
+    }
+
+    document.addEventListener('visibilitychange', refreshNotificationsOnVisibility)
+    window.addEventListener('focus', refreshNotificationsOnFocus)
+
+    return () => {
+      document.removeEventListener('visibilitychange', refreshNotificationsOnVisibility)
+      window.removeEventListener('focus', refreshNotificationsOnFocus)
     }
   }, [loadNotifications, session?.token])
 
@@ -408,9 +479,6 @@ export default function WorkspacePage({ routeParams = {} }) {
     Number.isInteger(Number(user.id)) && Number(user.id) > 0
       ? Number(user.id)
       : decodeAccessTokenSubject(session.token)
-  const unreadNotificationCount = workspaceNotifications.filter(
-    (notification) => !notification.read,
-  ).length
   const hasNotifications = workspaceNotifications.length > 0
   const isNotificationPanelShowingLoadingState =
     isNotificationPanelLoading && !hasNotifications
@@ -435,6 +503,22 @@ export default function WorkspacePage({ routeParams = {} }) {
     setChangePasswordFeedbackType('success')
     changePasswordFormRef.current?.reset()
     setIsChangePasswordModalOpen(true)
+  }
+
+  const handleNotificationAction = (notification) => {
+    const internalAction = getNotificationInternalAction(notification)
+
+    if (!internalAction) {
+      return
+    }
+
+    setIsAccountMenuOpen(false)
+    setIsNotificationPanelOpen(false)
+    setWorkspaceAction({
+      ...internalAction,
+      requestId: `${Date.now()}-${notification?.id || 'notification'}`,
+    })
+    navigate(routes.getWorkspaceSection(internalAction.sectionId))
   }
 
   const handleCloseChangePasswordModal = () => {
@@ -610,16 +694,21 @@ export default function WorkspacePage({ routeParams = {} }) {
                           >
                             <strong>{notification.title}</strong>
                             <p>{notification.message}</p>
-                            {notification.body ? (
-                              <p className="workspace-notification-card__body">{notification.body}</p>
-                            ) : null}
                             <div className="workspace-notification-card__footer">
                               <span>
                                 {isMarkingNotificationsAsRead && !notification.read
                                   ? 'Marking as read...'
                                   : notification.timeLabel}
                               </span>
-                              {notification.action_url ? (
+                              {getNotificationInternalAction(notification) ? (
+                                <button
+                                  type="button"
+                                  className="workspace-notification-card__action"
+                                  onClick={() => handleNotificationAction(notification)}
+                                >
+                                  {notification.action_label || 'Open'}
+                                </button>
+                              ) : notification.action_url ? (
                                 <a
                                   className="workspace-notification-card__action"
                                   href={notification.action_url}
@@ -711,7 +800,10 @@ export default function WorkspacePage({ routeParams = {} }) {
 
           <div className="workspace-content">
             <div className="workspace-content__inner">
-              <ActiveWorkspacePage currentUser={user} />
+              <ActiveWorkspacePage
+                currentUser={user}
+                workspaceAction={activeSectionId === 'costing' ? workspaceAction : null}
+              />
             </div>
           </div>
         </div>

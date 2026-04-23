@@ -60,7 +60,6 @@ function parseDate(dateValue) {
 }
 
 function formatDurationLabel(value, dueDate) {
-  // If dueDate is provided, calculate duration from today
   if (dueDate) {
     const parsedDueDate = parseDate(dueDate)
     if (parsedDueDate) {
@@ -78,7 +77,6 @@ function formatDurationLabel(value, dueDate) {
     }
   }
 
-  // Fallback to static duration value
   const duration = Number.parseInt(String(value ?? '').trim(), 10)
 
   if (!Number.isInteger(duration) || duration <= 0) {
@@ -88,19 +86,56 @@ function formatDurationLabel(value, dueDate) {
   return `${duration} working day${duration > 1 ? 's' : ''}`
 }
 
+function ConversationIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M7 17.5H5.75C4.7835 17.5 4 16.7165 4 15.75V7.75C4 6.7835 4.7835 6 5.75 6H18.25C19.2165 6 20 6.7835 20 7.75V15.75C20 16.7165 19.2165 17.5 18.25 17.5H11L7 20V17.5Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M8 10H16"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+      <path
+        d="M8 13.5H13.5"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
 export default function CostingSubElementCard({
   subElement,
   canFill,
   canAssignPilot = false,
+  canOpenConversation = false,
   onAssignPilot,
   onFill,
   onView,
+  onOpenConversation,
 }) {
   const durationLabel = formatDurationLabel(subElement.duration, subElement.dueDate)
   const dueDateLabel = subElement.dueDateLabel || 'Not planned'
   const statusTone = getStatusTone(subElement.status)
   const approvalTone = getApprovalTone(subElement.approvalStatus)
   const isApproved = isApprovedSubElement(subElement.approvalStatus)
+  const parsedConversationMessageCount = Number.parseInt(
+    String(subElement.conversationMessageCount ?? '').trim(),
+    10,
+  )
+  const hasConversationMessageCount =
+    Number.isInteger(parsedConversationMessageCount) && parsedConversationMessageCount >= 0
+  const conversationMessageCount = hasConversationMessageCount
+    ? parsedConversationMessageCount
+    : null
 
   return (
     <section className={`costing-simple__sub-element costing-simple__sub-element--${statusTone}`}>
@@ -112,13 +147,42 @@ export default function CostingSubElementCard({
             <div className="costing-simple__sub-element-title-row">
               <strong>{subElement.title}</strong>
 
-              <div className="costing-simple__sub-element-tags">
-                <span className={`costing-simple__pill costing-simple__pill--${statusTone}`}>
-                  {subElement.status}
-                </span>
-                <span className={`costing-simple__pill costing-simple__pill--${approvalTone}`}>
-                  {subElement.approvalStatus}
-                </span>
+              <div className="costing-simple__sub-element-title-actions">
+                {canOpenConversation ? (
+                  <div className="costing-simple__sub-element-conversation">
+                    <button
+                      type="button"
+                      className="costing-simple__sub-element-conversation-button"
+                      onClick={onOpenConversation}
+                      aria-label={
+                        hasConversationMessageCount
+                          ? `Open conversation (${conversationMessageCount} message${
+                              conversationMessageCount === 1 ? '' : 's'
+                            })`
+                          : 'Open conversation'
+                      }
+                      title="Open conversation"
+                    >
+                      <span className="costing-simple__sub-element-conversation-icon">
+                        <ConversationIcon />
+                      </span>
+                    </button>
+                    {hasConversationMessageCount ? (
+                      <span className="costing-simple__sub-element-conversation-count">
+                        {conversationMessageCount}
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                <div className="costing-simple__sub-element-tags">
+                  <span className={`costing-simple__pill costing-simple__pill--${statusTone}`}>
+                    {subElement.status}
+                  </span>
+                  <span className={`costing-simple__pill costing-simple__pill--${approvalTone}`}>
+                    {subElement.approvalStatus}
+                  </span>
+                </div>
               </div>
             </div>
 

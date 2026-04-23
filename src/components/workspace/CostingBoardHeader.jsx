@@ -10,11 +10,6 @@ export default function CostingBoardHeader({ totalProjects, boardStats, pluraliz
             across every production configuration.
           </p>
         </div>
-
-        <div className="costing-simple__hero-note" aria-label="Workspace scope">
-          <strong>{pluralize(totalProjects, 'active project')}</strong>
-          <span>Live backend view</span>
-        </div>
       </div>
 
       <div className="costing-simple__stats">

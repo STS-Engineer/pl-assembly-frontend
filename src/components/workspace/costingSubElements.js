@@ -190,6 +190,12 @@ function getTrimmedText(value) {
   return String(value ?? '').trim()
 }
 
+function getBaseSubElementKey(value) {
+  const trimmedValue = getTrimmedText(value)
+  // Extract the base key by removing the suffix after ':' (e.g., 'needed-data-understood:1' -> 'needed-data-understood')
+  return trimmedValue.split(':')[0]
+}
+
 function getDisplayText(value, fallback) {
   const normalizedValue = getTrimmedText(value)
   return normalizedValue || fallback
@@ -233,6 +239,22 @@ function getManagerDisplayName(sourceElement, fallback) {
   }
 
   return getDisplayText(approverValue, fallback)
+}
+
+function getPilotDisplayName(sourceElement, fallback) {
+  const pilotNameValue = getTrimmedText(
+    sourceElement?.pilot_name ??
+      sourceElement?.pilotName ??
+      sourceElement?.pilot_full_name ??
+      sourceElement?.pilotFullName,
+  )
+  const pilotValue = getTrimmedText(sourceElement?.pilot)
+
+  if (pilotNameValue) {
+    return pilotNameValue
+  }
+
+  return getDisplayText(pilotValue, fallback)
 }
 
 function getLookupKey(value) {
@@ -427,8 +449,34 @@ export function normalizeCostingSubElementApprovalStatusOptions(options) {
 export function getCostingSubElementTemplate(key) {
   return (
     COSTING_SUB_ELEMENT_TEMPLATES.find((template) => getTrimmedText(template.key) === getTrimmedText(key)) ||
+    COSTING_SUB_ELEMENT_TEMPLATES.find((template) => getTrimmedText(template.key) === getBaseSubElementKey(key)) ||
     null
   )
+}
+
+function getConversationMessageCount(sourceElement = {}) {
+  const rawMessageCount =
+    sourceElement?.conversation_message_count ??
+    sourceElement?.conversationMessageCount ??
+    sourceElement?.message_count ??
+    sourceElement?.messageCount ??
+    sourceElement?.messages_count ??
+    sourceElement?.messagesCount ??
+    sourceElement?.conversation?.total_count ??
+    sourceElement?.conversation?.totalCount ??
+    sourceElement?.conversation?.message_count ??
+    sourceElement?.conversation?.messageCount
+  const parsedMessageCount = Number.parseInt(String(rawMessageCount ?? '').trim(), 10)
+
+  if (Number.isInteger(parsedMessageCount) && parsedMessageCount >= 0) {
+    return parsedMessageCount
+  }
+
+  if (Array.isArray(sourceElement?.conversation?.items)) {
+    return sourceElement.conversation.items.length
+  }
+
+  return null
 }
 
 export function createDefaultCostingSubElements() {
@@ -444,6 +492,7 @@ export function createDefaultCostingSubElements() {
     approver: template.defaultApprover,
     status: template.defaultStatus,
     approvalStatus: template.defaultApprovalStatus,
+    conversationMessageCount: null,
     duration: '',
     dueDate: '',
     permissions: {
@@ -460,9 +509,10 @@ export function normalizeCostingSubElements(subElements) {
   // Create a lookup map for O(n) performance instead of O(n*m)
   const sourceElementsMap = new Map()
   sourceElements.forEach((subElement) => {
-    const key = getTrimmedText(subElement?.key)
-    if (key) {
-      sourceElementsMap.set(key, subElement)
+    const trimmedKey = getTrimmedText(subElement?.key)
+    const baseKey = getBaseSubElementKey(trimmedKey)
+    if (baseKey) {
+      sourceElementsMap.set(baseKey, subElement)
     }
   })
 
@@ -501,10 +551,9 @@ export function normalizeCostingSubElements(subElements) {
         template.approverRoleLabel,
       ),
       accessRolesLabel: template.accessRolesLabel,
-      pilot: getDisplayText(
-        sourceElement?.pilot ?? sourceElement?.pilot_name,
-        template.defaultPilot,
-      ),
+      pilot: getPilotDisplayName(sourceElement, template.defaultPilot),
+      pilotId: getTrimmedText(sourceElement?.pilot_id ?? sourceElement?.pilotId),
+      pilotEmail: getTrimmedText(sourceElement?.pilot_email ?? sourceElement?.pilotEmail),
       approver: getManagerDisplayName(sourceElement, template.defaultApprover),
       status: normalizeCostingSubElementStatus(sourceElement?.status, template.defaultStatus),
       approvalStatus: normalizeCostingSubElementApprovalStatus(
@@ -516,6 +565,7 @@ export function normalizeCostingSubElements(subElements) {
           sourceElement?.work_duration ??
           sourceElement?.duration_days,
       ),
+      conversationMessageCount: getConversationMessageCount(sourceElement),
       dueDate: getTrimmedText(
         sourceElement?.dueDate ??
           sourceElement?.due_date ??
@@ -559,6 +609,8 @@ export function createEmptyCostingSubElementForm(subElement = {}) {
     dueDate: getTrimmedText(subElement.dueDate),
   }
 }
+
+export { getBaseSubElementKey }
 
 export function canFillCostingSubElement(userRole, subElementKey) {
   const normalizedUserRole = getLookupKey(userRole)

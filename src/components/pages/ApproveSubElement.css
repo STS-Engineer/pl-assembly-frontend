@@ -9,12 +9,12 @@
 
 .approve-sub-element-page__container {
   width: 100%;
-  max-width: 900px;
+  max-width: 1050px;
 }
 
 .approve-sub-element-page__container .costing-simple__modal {
   width: 100%;
-  max-width: 900px;
+  max-width: 1050px;
   min-height: 600px;
   padding: 2rem;
   display: flex;

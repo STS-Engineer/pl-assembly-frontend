@@ -98,9 +98,6 @@ export default function CostingPilotAssignmentModal({
           <div className="costing-simple__pilot-selected">
             <span>Selected pilot</span>
             <strong>{selectedPilot?.fullName || selectedPilot?.email || 'No pilot selected'}</strong>
-            {selectedPilot?.fullName && selectedPilot?.email ? (
-              <small>{selectedPilot.email}</small>
-            ) : null}
           </div>
 
           <div className="costing-simple__pilot-picker">
@@ -141,9 +138,6 @@ export default function CostingPilotAssignmentModal({
                         <strong>
                           {pilotOption.fullName || pilotOption.email || pilotOption.selectionValue}
                         </strong>
-                        {pilotOption.fullName && pilotOption.email ? (
-                          <span>{pilotOption.email}</span>
-                        ) : null}
                       </button>
                     )
                   })

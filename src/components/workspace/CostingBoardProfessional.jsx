@@ -1,21 +1,25 @@
 import { useEffect, useState } from 'react'
 import {
+  createRfqCostingSubElementConversationMessage,
   createRfqCosting,
   getUsers,
   getRfqs,
   getRfqCostingSubElementOptions,
+  getRfqCostingSubElementConversation,
   getRfqCostingSubElementsByCostingIds,
   getRfqCostingSubElements,
   isRfqCostingSubElementApiEnabled,
   updateRfqCosting,
   updateRfqCostingSubElement,
 } from '../../services/api'
+import { getSession } from '../../services/session'
 import CostingBoardHeader from './CostingBoardHeader'
 import CostingBoardState from './CostingBoardState'
 import CostingToast from './CostingToast'
 import CostingProjectCard from './CostingProjectCard'
 import CostingPilotAssignmentModal from './CostingPilotAssignmentModal'
 import CostingStageModal, { createEmptyCostingForm } from './CostingStageModal'
+import CostingSubElementConversationDrawer from './CostingSubElementConversationDrawer'
 import CostingSubElementModal from './CostingSubElementModal'
 import {
   COSTING_SUB_ELEMENT_STATUS_OPTIONS,
@@ -23,6 +27,7 @@ import {
   getCostingSubElementTemplate,
   normalizeCostingSubElementStatusOptions,
   normalizeCostingSubElements,
+  getBaseSubElementKey,
 } from './costingSubElements'
 
 const DATE_FORMATTER = new Intl.DateTimeFormat('en-GB', {
@@ -739,7 +744,11 @@ function isCurrentUserAssignedManager(currentUser, subElement) {
 
 function isCurrentUserAssignedPilot(currentUser, subElement) {
   const currentUserLookupValues = getIdentityLookupValues(currentUser)
-  const pilotLookupValues = getIdentityLookupValuesFromValue(subElement?.pilot)
+  const pilotLookupValues = [
+    ...getIdentityLookupValuesFromValue(subElement?.pilotId),
+    ...getIdentityLookupValuesFromValue(subElement?.pilotEmail),
+    ...getIdentityLookupValuesFromValue(subElement?.pilot),
+  ]
 
   if (currentUserLookupValues.length === 0 || pilotLookupValues.length === 0) {
     return false
@@ -748,16 +757,11 @@ function isCurrentUserAssignedPilot(currentUser, subElement) {
   return currentUserLookupValues.some((lookupValue) => pilotLookupValues.includes(lookupValue))
 }
 
-function getPilotAssignmentValue(pilotUser, fullNameCounts) {
+function getPilotAssignmentValue(pilotUser) {
   const fullName = getOptionalText(pilotUser?.full_name ?? pilotUser?.fullName)
   const email = getOptionalText(pilotUser?.email)
-  const normalizedFullName = String(fullName || '').toLowerCase()
 
-  if (fullName && fullNameCounts.get(normalizedFullName) === 1) {
-    return fullName
-  }
-
-  return email || fullName || String(pilotUser?.id ?? '')
+  return fullName || email || String(pilotUser?.id ?? '')
 }
 
 function getPilotOptionLabel(pilotUser) {
@@ -774,24 +778,13 @@ function getPilotOptionLabel(pilotUser) {
 
 function getPilotSelectionOptions(users, subElementKey) {
   const candidateUsers = Array.isArray(users) ? users : []
-  const fullNameCounts = candidateUsers.reduce((counts, user) => {
-    const fullName = getOptionalText(user?.full_name ?? user?.fullName)
-
-    if (!fullName) {
-      return counts
-    }
-
-    const normalizedFullName = fullName.toLowerCase()
-    counts.set(normalizedFullName, (counts.get(normalizedFullName) || 0) + 1)
-    return counts
-  }, new Map())
   const pilotOptionsMap = new Map()
 
   candidateUsers.forEach((pilotUser) => {
     const selectionValue =
       getOptionalText(pilotUser?.email) ||
       getOptionalText(pilotUser?.id) ||
-      getPilotAssignmentValue(pilotUser, fullNameCounts)
+      getPilotAssignmentValue(pilotUser)
 
     if (!selectionValue || pilotOptionsMap.has(selectionValue)) {
       return
@@ -800,7 +793,7 @@ function getPilotSelectionOptions(users, subElementKey) {
     pilotOptionsMap.set(selectionValue, {
       selectionValue,
       id: pilotUser?.id ?? null,
-      assignmentValue: getPilotAssignmentValue(pilotUser, fullNameCounts),
+      assignmentValue: getPilotAssignmentValue(pilotUser),
       fullName: getOptionalText(pilotUser?.full_name ?? pilotUser?.fullName),
       email: getOptionalText(pilotUser?.email),
       role: getOptionalText(pilotUser?.role),
@@ -811,6 +804,294 @@ function getPilotSelectionOptions(users, subElementKey) {
   return Array.from(pilotOptionsMap.values()).sort((leftOption, rightOption) =>
     leftOption.label.localeCompare(rightOption.label),
   )
+}
+
+function getConversationMentionableUsers(users = []) {
+  const candidateUsers = Array.isArray(users) ? users : []
+  const mentionableUsersMap = new Map()
+
+  candidateUsers.forEach((user) => {
+    const approvalStatus = getOptionalText(user?.approval_status ?? user?.approvalStatus)
+
+    if (approvalStatus && approvalStatus.toLowerCase() !== 'approved') {
+      return
+    }
+
+    const fullName = getOptionalText(user?.full_name ?? user?.fullName ?? user?.name)
+    const email = getOptionalText(user?.email)
+    const id = getOptionalText(user?.id)
+    const displayName = fullName || email || `User ${id || ''}`.trim()
+    const mentionValue = fullName || displayName
+    const key = email || id || mentionValue
+
+    if (!key || mentionableUsersMap.has(key)) {
+      return
+    }
+
+    mentionableUsersMap.set(key, {
+      id: id || key,
+      name: displayName,
+      full_name: fullName || displayName,
+      email,
+      mentionValue,
+    })
+  })
+
+  return Array.from(mentionableUsersMap.values()).sort((leftUser, rightUser) =>
+    `${leftUser.name} ${leftUser.email}`.localeCompare(`${rightUser.name} ${rightUser.email}`),
+  )
+}
+
+function getMatchedPilotUser(subElement, users = []) {
+  const pilotLookupValues = [
+    subElement?.pilotId,
+    subElement?.pilotEmail,
+    subElement?.pilot,
+  ]
+    .flatMap((value) => getIdentityLookupValuesFromValue(value))
+
+  if (pilotLookupValues.length === 0) {
+    return null
+  }
+
+  return (Array.isArray(users) ? users : []).find((user) => {
+    const userLookupValues = getIdentityLookupValues(user)
+    return pilotLookupValues.some((lookupValue) => userLookupValues.includes(lookupValue))
+  }) || null
+}
+
+function getPilotDisplayValue(subElement, users = []) {
+  const matchedPilotUser = getMatchedPilotUser(subElement, users)
+
+  if (matchedPilotUser) {
+    return (
+      getOptionalText(matchedPilotUser?.full_name ?? matchedPilotUser?.fullName ?? matchedPilotUser?.name) ||
+      getOptionalText(matchedPilotUser?.email) ||
+      getOptionalText(subElement?.pilot)
+    )
+  }
+
+  return getOptionalText(subElement?.pilot)
+}
+
+function enrichProjectsWithPilotUsers(projects, users = []) {
+  if (!Array.isArray(users) || users.length === 0) {
+    return projects
+  }
+
+  return (Array.isArray(projects) ? projects : []).map((project) => ({
+    ...project,
+    rfqs: (Array.isArray(project.rfqs) ? project.rfqs : []).map((rfq) => ({
+      ...rfq,
+      costings: (Array.isArray(rfq.costings) ? rfq.costings : []).map((costing) => ({
+        ...costing,
+        subElements: (Array.isArray(costing.subElements) ? costing.subElements : []).map((subElement) => {
+          const matchedPilotUser = getMatchedPilotUser(subElement, users)
+
+          if (!matchedPilotUser) {
+            return subElement
+          }
+
+          return {
+            ...subElement,
+            pilot:
+              getOptionalText(
+                matchedPilotUser?.full_name ?? matchedPilotUser?.fullName ?? matchedPilotUser?.name,
+              ) ||
+              subElement.pilot,
+            pilotId: getOptionalText(subElement?.pilotId ?? matchedPilotUser?.id),
+            pilotEmail: getOptionalText(subElement?.pilotEmail ?? matchedPilotUser?.email),
+          }
+        }),
+      })),
+    })),
+  }))
+}
+
+function getConversationMessageCountFromResponse(response = null) {
+  const rawMessageCount =
+    response?.total_count ??
+    response?.totalCount ??
+    response?.message_count ??
+    response?.messageCount ??
+    response?.conversation?.total_count ??
+    response?.conversation?.totalCount
+  const parsedMessageCount = Number.parseInt(String(rawMessageCount ?? '').trim(), 10)
+
+  if (Number.isInteger(parsedMessageCount) && parsedMessageCount >= 0) {
+    return parsedMessageCount
+  }
+
+  return Array.isArray(response?.items) ? response.items.length : 0
+}
+
+function updateProjectsConversationMessageCount(projects, costingId, subElementKey, messageCount) {
+  const normalizedCostingId = String(costingId ?? '').trim()
+  const normalizedSubElementKey = getBaseSubElementKey(subElementKey)
+
+  if (!normalizedCostingId || !normalizedSubElementKey) {
+    return projects
+  }
+
+  return (Array.isArray(projects) ? projects : []).map((project) => ({
+    ...project,
+    rfqs: (Array.isArray(project.rfqs) ? project.rfqs : []).map((rfq) => ({
+      ...rfq,
+      costings: (Array.isArray(rfq.costings) ? rfq.costings : []).map((costing) => {
+        if (String(costing?.id ?? '').trim() !== normalizedCostingId) {
+          return costing
+        }
+
+        return {
+          ...costing,
+          subElements: (Array.isArray(costing.subElements) ? costing.subElements : []).map(
+            (subElement) =>
+              getBaseSubElementKey(subElement?.key) === normalizedSubElementKey
+                ? {
+                    ...subElement,
+                    conversationMessageCount: messageCount,
+                  }
+                : subElement,
+          ),
+        }
+      }),
+    })),
+  }))
+}
+
+function buildConversationCountLookupKey(costingId, subElementKey) {
+  const normalizedCostingId = String(costingId ?? '').trim()
+  const normalizedSubElementKey = getBaseSubElementKey(subElementKey)
+
+  if (!normalizedCostingId || !normalizedSubElementKey) {
+    return ''
+  }
+
+  return `${normalizedCostingId}:${normalizedSubElementKey}`
+}
+
+function updateProjectsConversationMessageCounts(projects, messageCountsByKey = new Map()) {
+  if (!(messageCountsByKey instanceof Map) || messageCountsByKey.size === 0) {
+    return projects
+  }
+
+  return (Array.isArray(projects) ? projects : []).map((project) => ({
+    ...project,
+    rfqs: (Array.isArray(project.rfqs) ? project.rfqs : []).map((rfq) => ({
+      ...rfq,
+      costings: (Array.isArray(rfq.costings) ? rfq.costings : []).map((costing) => ({
+        ...costing,
+        subElements: (Array.isArray(costing.subElements) ? costing.subElements : []).map(
+          (subElement) => {
+            const lookupKey = buildConversationCountLookupKey(costing?.id, subElement?.key)
+
+            if (!lookupKey || !messageCountsByKey.has(lookupKey)) {
+              return subElement
+            }
+
+            return {
+              ...subElement,
+              conversationMessageCount: messageCountsByKey.get(lookupKey),
+            }
+          },
+        ),
+      })),
+    })),
+  }))
+}
+
+function canAccessSubElementConversation(currentUser, currentUserBackendRole, subElement) {
+  return (
+    currentUserBackendRole === 'admin' ||
+    isCurrentUserAssignedManager(currentUser, subElement) ||
+    isCurrentUserAssignedPilot(currentUser, subElement)
+  )
+}
+
+async function preloadConversationMessageCounts(
+  projects,
+  currentUser,
+  currentUserBackendRole,
+  sessionToken,
+) {
+  if (!sessionToken) {
+    return projects
+  }
+
+  const targets = []
+  const seenLookupKeys = new Set()
+
+  ;(Array.isArray(projects) ? projects : []).forEach((project) => {
+    ;(Array.isArray(project.rfqs) ? project.rfqs : []).forEach((rfq) => {
+      ;(Array.isArray(rfq.costings) ? rfq.costings : []).forEach((costing) => {
+        if (costing?.stageKey !== 'initial' || !costing?.id) {
+          return
+        }
+
+        ;(Array.isArray(costing.subElements) ? costing.subElements : []).forEach((subElement) => {
+          const lookupKey = buildConversationCountLookupKey(costing.id, subElement?.key)
+          const hasKnownMessageCount = Number.isInteger(subElement?.conversationMessageCount)
+
+          if (
+            !lookupKey ||
+            hasKnownMessageCount ||
+            seenLookupKeys.has(lookupKey) ||
+            !canAccessSubElementConversation(currentUser, currentUserBackendRole, subElement)
+          ) {
+            return
+          }
+
+          seenLookupKeys.add(lookupKey)
+          targets.push({
+            lookupKey,
+            costingId: costing.id,
+            subElementKey: getBaseSubElementKey(subElement?.key),
+          })
+        })
+      })
+    })
+  })
+
+  if (targets.length === 0) {
+    return projects
+  }
+
+  const messageCountsByKey = new Map()
+  const batchSize = 6
+
+  for (let index = 0; index < targets.length; index += batchSize) {
+    const batch = targets.slice(index, index + batchSize)
+    const batchResults = await Promise.all(
+      batch.map(async (target) => {
+        try {
+          const response = await getRfqCostingSubElementConversation(
+            target.costingId,
+            target.subElementKey,
+            sessionToken,
+          )
+
+          return [target.lookupKey, getConversationMessageCountFromResponse(response)]
+        } catch (error) {
+          if (![401, 403, 404].includes(error?.statusCode)) {
+            console.warn('[CostingBoard] Unable to preload conversation count:', error)
+          }
+
+          return null
+        }
+      }),
+    )
+
+    batchResults.forEach((result) => {
+      if (!Array.isArray(result) || result.length !== 2) {
+        return
+      }
+
+      const [lookupKey, messageCount] = result
+      messageCountsByKey.set(lookupKey, messageCount)
+    })
+  }
+
+  return updateProjectsConversationMessageCounts(projects, messageCountsByKey)
 }
 
 function resolveInitialPilotSelectionValue(subElement, pilotOptions) {
@@ -912,7 +1193,7 @@ async function attachInitialCostingSubElements(rfqs, currentRole) {
   )
 }
 
-export default function CostingBoardProfessional({ currentUser = {} }) {
+export default function CostingBoardProfessional({ currentUser = {}, workspaceAction = null }) {
   const [projects, setProjects] = useState([])
   const [expandedProjectIds, setExpandedProjectIds] = useState([])
   const [activeCostingModal, setActiveCostingModal] = useState(null)
@@ -931,11 +1212,21 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
   const [isSubmittingPilotAssignment, setIsSubmittingPilotAssignment] = useState(false)
   const [pilotAssignmentFeedback, setPilotAssignmentFeedback] = useState('')
   const [pilotAssignmentFeedbackType, setPilotAssignmentFeedbackType] = useState('success')
+  const [activeConversationDrawer, setActiveConversationDrawer] = useState(null)
+  const [conversationData, setConversationData] = useState(null)
+  const [conversationError, setConversationError] = useState('')
+  const [isLoadingConversation, setIsLoadingConversation] = useState(false)
+  const [isSubmittingConversation, setIsSubmittingConversation] = useState(false)
+  const [isLoadingConversationMentionUsers, setIsLoadingConversationMentionUsers] =
+    useState(false)
+  const [conversationMentionUsersError, setConversationMentionUsersError] = useState('')
+  const [conversationReloadKey, setConversationReloadKey] = useState(0)
   const [subElementOptions, setSubElementOptions] = useState(() => DEFAULT_SUB_ELEMENT_OPTIONS)
   const [isLoading, setIsLoading] = useState(true)
   const [errorMessage, setErrorMessage] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
   const currentUserBackendRole = getCurrentUserBackendRole(currentUser)
+  const currentUserIdentityKey = getIdentityLookupValues(currentUser).join('|')
   const isSubElementApiEnabled = isRfqCostingSubElementApiEnabled()
 
   useEffect(() => {
@@ -975,16 +1266,25 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
           }
         }
 
-        const nextProjects = groupRfqsIntoProjects(nextRfqs)
+        const nextProjects = enrichProjectsWithPilotUsers(
+          groupRfqsIntoProjects(nextRfqs),
+          pilotUsers,
+        )
+        const hydratedProjects = await preloadConversationMessageCounts(
+          nextProjects,
+          currentUser,
+          currentUserBackendRole,
+          getSession()?.token,
+        )
 
         if (!isActive) {
           return
         }
 
         setSubElementOptions(nextSubElementOptions)
-        setProjects(nextProjects)
+        setProjects(hydratedProjects)
         setExpandedProjectIds((currentIds) => {
-          const availableIds = nextProjects.map((project) => project.id)
+          const availableIds = hydratedProjects.map((project) => project.id)
           return currentIds.filter((projectId) => availableIds.includes(projectId))
         })
       } catch (error) {
@@ -1008,16 +1308,260 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
     return () => {
       isActive = false
     }
-  }, [currentUserBackendRole, isSubElementApiEnabled, reloadKey])
+  }, [currentUserBackendRole, currentUserIdentityKey, isSubElementApiEnabled, reloadKey])
 
-  const totalProjects = projects.length
-  const totalRfqs = projects.reduce((count, project) => count + getProjectRfqCount(project), 0)
-  const totalCostings = projects.reduce((count, project) => count + project.costingCount, 0)
-  const awaitingCostingCount = getAwaitingCostingCount(projects)
+  useEffect(() => {
+    if (pilotUsers.length > 0) {
+      return undefined
+    }
+
+    let isActive = true
+
+    async function loadUsers() {
+      try {
+        const response = await getUsers(getSession()?.token)
+        const nextPilotUsers = Array.isArray(response) ? response : response?.items ?? []
+
+        if (!isActive) {
+          return
+        }
+
+        setPilotUsers(nextPilotUsers)
+      } catch (error) {
+        console.warn('[CostingBoard] Unable to preload users:', error)
+      }
+    }
+
+    loadUsers()
+
+    return () => {
+      isActive = false
+    }
+  }, [pilotUsers.length])
+
+  useEffect(() => {
+    if (pilotUsers.length === 0) {
+      return
+    }
+
+    setProjects((currentProjects) => enrichProjectsWithPilotUsers(currentProjects, pilotUsers))
+  }, [pilotUsers])
+
+  useEffect(() => {
+    if (!activeConversationDrawer) {
+      setConversationData(null)
+      setConversationError('')
+      setIsLoadingConversation(false)
+      return undefined
+    }
+
+    let isActive = true
+
+    async function loadConversation() {
+      setIsLoadingConversation(true)
+      setConversationError('')
+
+      try {
+        const sessionToken = getSession()?.token
+
+        if (!sessionToken) {
+          throw new Error('Authentication is required.')
+        }
+
+        const baseKey = getBaseSubElementKey(activeConversationDrawer.subElementKey)
+        console.log('[CostingBoard] Loading conversation for:', {
+          costingId: activeConversationDrawer.costingId,
+          subElementKey: activeConversationDrawer.subElementKey,
+          baseKey,
+        })
+
+        const response = await getRfqCostingSubElementConversation(
+          activeConversationDrawer.costingId,
+          baseKey,
+          sessionToken,
+        )
+
+        if (!isActive) {
+          return
+        }
+
+        console.log('[CostingBoard] Conversation loaded successfully:', {
+          messageCount: response?.items?.length || 0,
+        })
+        setConversationData(response)
+        setProjects((currentProjects) =>
+          updateProjectsConversationMessageCount(
+            currentProjects,
+            activeConversationDrawer.costingId,
+            activeConversationDrawer.subElementKey,
+            getConversationMessageCountFromResponse(response),
+          ),
+        )
+      } catch (error) {
+        if (!isActive) {
+          return
+        }
+
+        console.error('[CostingBoard] Failed to load conversation:', {
+          message: error.message,
+          statusCode: error.statusCode,
+          costingId: activeConversationDrawer.costingId,
+          subElementKey: activeConversationDrawer.subElementKey,
+          error,
+        })
+
+        setConversationData(null)
+        
+        let errorMessage = error.message || 'Unable to load the conversation.'
+        
+        // Provide more specific error messages
+        if (error.statusCode === 404) {
+          errorMessage = `This conversation step is not available for costing ${activeConversationDrawer.costingId}. Please verify the costing exists and is in Initial Costing stage.`
+        } else if (error.statusCode === 401) {
+          errorMessage = 'Your session has expired. Please sign in again.'
+        } else if (error.statusCode === 403) {
+          errorMessage = 'You do not have permission to access this conversation.'
+        }
+        
+        setConversationError(errorMessage)
+      } finally {
+        if (isActive) {
+          setIsLoadingConversation(false)
+        }
+      }
+    }
+
+    loadConversation()
+
+    return () => {
+      isActive = false
+    }
+  }, [
+    activeConversationDrawer?.costingId,
+    activeConversationDrawer?.subElementKey,
+    conversationReloadKey,
+  ])
+
+  useEffect(() => {
+    if (!activeConversationDrawer) {
+      setConversationMentionUsersError('')
+      setIsLoadingConversationMentionUsers(false)
+      return undefined
+    }
+
+    if (pilotUsers.length > 0) {
+      setConversationMentionUsersError('')
+      return undefined
+    }
+
+    let isActive = true
+
+    async function loadConversationMentionUsers() {
+      setIsLoadingConversationMentionUsers(true)
+      setConversationMentionUsersError('')
+
+      try {
+        const response = await getUsers(getSession()?.token)
+        const nextUsers = Array.isArray(response) ? response : response?.items ?? []
+
+        if (!isActive) {
+          return
+        }
+
+        setPilotUsers(nextUsers)
+      } catch (error) {
+        if (!isActive) {
+          return
+        }
+
+        setConversationMentionUsersError(error.message || 'Unable to load users to mention.')
+      } finally {
+        if (isActive) {
+          setIsLoadingConversationMentionUsers(false)
+        }
+      }
+    }
+
+    loadConversationMentionUsers()
+
+    return () => {
+      isActive = false
+    }
+  }, [activeConversationDrawer?.costingId, activeConversationDrawer?.subElementKey, pilotUsers.length])
+
+  useEffect(() => {
+    if (!workspaceAction || workspaceAction.type !== 'open-step-conversation') {
+      return
+    }
+
+    const normalizedCostingId = String(workspaceAction.costingId || '').trim()
+    const normalizedSubElementKey = getBaseSubElementKey(workspaceAction.subElementKey)
+
+    if (!normalizedCostingId || !normalizedSubElementKey) {
+      return
+    }
+
+    let matchedProject = null
+    let matchedEntry = null
+    let matchedSubElement = null
+
+    projects.some((project) => {
+      const projectEntries = project.stages.flatMap((stage) =>
+        getProjectStageEntries(project, stage.key).map((entry) => ({
+          ...entry,
+          stageLabel: stage.label,
+          stageKey: stage.key,
+        })),
+      )
+
+      return projectEntries.some((entry) => {
+        if (String(entry.id) !== normalizedCostingId) {
+          return false
+        }
+
+        const entrySubElements = Array.isArray(entry.subElements) ? entry.subElements : []
+        const foundSubElement =
+          entrySubElements.find(
+            (subElement) => getBaseSubElementKey(subElement.key) === normalizedSubElementKey,
+          ) || null
+
+        matchedProject = project
+        matchedEntry = entry
+        matchedSubElement = foundSubElement
+        return true
+      })
+    })
+
+    if (matchedProject) {
+      setExpandedProjectIds((currentIds) =>
+        currentIds.includes(matchedProject.id) ? currentIds : [...currentIds, matchedProject.id],
+      )
+    }
+
+    setActiveConversationDrawer({
+      projectId: matchedProject?.id || null,
+      projectTitle: matchedProject?.title || workspaceAction.projectTitle || 'Project',
+      costingId: normalizedCostingId,
+      costingReference: matchedEntry?.reference || workspaceAction.costingReference || '',
+      stageLabel: matchedEntry?.stageLabel || workspaceAction.stageLabel || 'Initial Costing',
+      subElementKey: matchedSubElement?.key || normalizedSubElementKey,
+      subElementTitle:
+        matchedSubElement?.title || workspaceAction.subElementTitle || 'Step conversation',
+    })
+    setConversationReloadKey((currentValue) => currentValue + 1)
+  }, [projects, workspaceAction?.requestId])
+
+  const visibleProjects =
+    pilotUsers.length > 0 ? enrichProjectsWithPilotUsers(projects, pilotUsers) : projects
+
+  const totalProjects = visibleProjects.length
+  const totalRfqs = visibleProjects.reduce((count, project) => count + getProjectRfqCount(project), 0)
+  const totalCostings = visibleProjects.reduce((count, project) => count + project.costingCount, 0)
+  const awaitingCostingCount = getAwaitingCostingCount(visibleProjects)
 
   const boardStats = [
-    { label: 'Projects', value: totalProjects },
-    { label: 'RFQs', value: totalRfqs },
+    { label: 'RFQs', value: totalProjects },
+    { label: 'Sub-elements', value: totalRfqs },
     { label: 'Linked costings', value: totalCostings },
     { label: 'Awaiting costing', value: awaitingCostingCount },
   ]
@@ -1101,6 +1645,16 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
     setPilotAssignmentError('')
   }
 
+  const closeConversationDrawer = ({ force = false } = {}) => {
+    if (isSubmittingConversation && !force) {
+      return
+    }
+
+    setActiveConversationDrawer(null)
+    setConversationData(null)
+    setConversationError('')
+  }
+
   const openSubElementModal = (project, entry, subElement, mode) => {
     setActiveSubElementModal({
       mode,
@@ -1113,7 +1667,15 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
       subElementTitle: subElement.title,
       pilotRoleLabel: subElement.pilotRoleLabel,
       pilot:
-        mode === 'edit' ? getSubElementPilotValue(subElement, currentUser) : subElement.pilot,
+        mode === 'edit'
+          ? getPilotDisplayValue(
+              {
+                ...subElement,
+                pilot: getSubElementPilotValue(subElement, currentUser),
+              },
+              pilotUsers,
+            ) || getSubElementPilotValue(subElement, currentUser)
+          : getPilotDisplayValue(subElement, pilotUsers) || subElement.pilot,
       approver:
         mode === 'edit'
           ? getSubElementApproverValue(subElement, currentUser)
@@ -1134,6 +1696,23 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
 
   const openViewSubElementModal = (project, entry, subElement) => {
     openSubElementModal(project, entry, subElement, 'view')
+  }
+
+  const openConversationDrawer = (project, entry, subElement) => {
+    if (!canAccessConversation(subElement)) {
+      return
+    }
+
+    setActiveConversationDrawer({
+      projectId: project.id,
+      projectTitle: project.title,
+      costingId: entry.id,
+      costingReference: entry.reference,
+      stageLabel: entry.stageLabel,
+      subElementKey: subElement.key,
+      subElementTitle: subElement.title,
+    })
+    setConversationReloadKey((currentValue) => currentValue + 1)
   }
 
   const openPilotAssignmentModal = async (project, entry, subElement) => {
@@ -1158,8 +1737,9 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
       subElementKey: subElement.key,
       subElementTitle: subElement.title,
       currentPilot:
-        getOptionalText(subElement.pilot) && subElement.pilot !== 'Project pilot'
-          ? subElement.pilot
+        getOptionalText(getPilotDisplayValue(subElement, pilotUsers)) &&
+        getPilotDisplayValue(subElement, pilotUsers) !== 'Project pilot'
+          ? getPilotDisplayValue(subElement, pilotUsers)
           : '',
       managerName,
       subElement,
@@ -1177,7 +1757,7 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
     setIsLoadingPilotUsers(true)
 
     try {
-      const response = await getUsers()
+      const response = await getUsers(getSession()?.token)
       const nextPilotUsers = Array.isArray(response) ? response : response?.items ?? []
       const nextPilotOptions = getPilotSelectionOptions(nextPilotUsers, subElement.key)
 
@@ -1195,6 +1775,9 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
   const canFillSubElement = (subElement) =>
     isCurrentUserAssignedManager(currentUser, subElement) ||
     isCurrentUserAssignedPilot(currentUser, subElement)
+
+  const canAccessConversation = (subElement) =>
+    currentUserBackendRole === 'admin' || canFillSubElement(subElement)
 
   const handleCostingFormChange = (field, value) => {
     setCostingForm((currentForm) => ({
@@ -1282,7 +1865,7 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
         try {
           await updateRfqCostingSubElement(
             activePilotAssignmentModal.costingId,
-            activePilotAssignmentModal.subElementKey,
+            getBaseSubElementKey(activePilotAssignmentModal.subElementKey),
             {
               current_role: currentUserBackendRole,
               pilot: selectedPilot.assignmentValue,
@@ -1384,7 +1967,7 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
         try {
           await updateRfqCostingSubElement(
             activeSubElementModal.costingId,
-            activeSubElementModal.subElementKey,
+            getBaseSubElementKey(activeSubElementModal.subElementKey),
             {
               current_role: currentUserBackendRole,
               pilot: activeSubElementModal.pilot,
@@ -1470,6 +2053,86 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
     activePilotAssignmentModal?.subElementKey,
   )
 
+  const handleConversationSubmit = async (payload) => {
+    if (!activeConversationDrawer) {
+      throw new Error('No active conversation was selected.')
+    }
+
+    const sessionToken = getSession()?.token
+
+    if (!sessionToken) {
+      throw new Error('Authentication is required.')
+    }
+
+    setIsSubmittingConversation(true)
+
+    try {
+      const baseKey = getBaseSubElementKey(activeConversationDrawer.subElementKey)
+      console.log('[CostingBoard] Submitting conversation message:', {
+        costingId: activeConversationDrawer.costingId,
+        subElementKey: activeConversationDrawer.subElementKey,
+        baseKey,
+        messageLength: payload?.message?.length || 0,
+      })
+
+      const response = await createRfqCostingSubElementConversationMessage(
+        activeConversationDrawer.costingId,
+        baseKey,
+        payload,
+        sessionToken,
+      )
+
+      console.log('[CostingBoard] Message sent successfully')
+      const currentConversationItems = Array.isArray(conversationData?.items) ? conversationData.items : []
+      const nextConversationMessageCount = response?.item
+        ? currentConversationItems.length + 1
+        : getConversationMessageCountFromResponse(response)
+
+      setConversationData((currentConversationData) => {
+        const currentItems = Array.isArray(currentConversationData?.items)
+          ? currentConversationData.items
+          : []
+        const nextItems = response?.item ? [...currentItems, response.item] : currentItems
+
+        return {
+          conversation: response?.conversation || currentConversationData?.conversation || null,
+          items: nextItems,
+          total_count: nextItems.length,
+        }
+      })
+      setProjects((currentProjects) =>
+        updateProjectsConversationMessageCount(
+          currentProjects,
+          activeConversationDrawer.costingId,
+          activeConversationDrawer.subElementKey,
+          nextConversationMessageCount,
+        ),
+      )
+
+      return response
+    } catch (error) {
+      console.error('[CostingBoard] Failed to send message:', {
+        message: error.message,
+        statusCode: error.statusCode,
+        error,
+      })
+
+      if (error.statusCode === 404) {
+        throw new Error(
+          `Cannot send message: This conversation step is not available for costing ${activeConversationDrawer.costingId}.`,
+        )
+      } else if (error.statusCode === 401) {
+        throw new Error('Your session has expired. Please sign in again.')
+      } else if (error.statusCode === 403) {
+        throw new Error('You do not have permission to send messages in this conversation.')
+      }
+
+      throw error instanceof Error ? error : new Error('Unable to send the message.')
+    } finally {
+      setIsSubmittingConversation(false)
+    }
+  }
+
   return (
     <>
       <CostingToast
@@ -1502,7 +2165,7 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
         />
       ) : null}
 
-      {!isLoading && !errorMessage && projects.length === 0 ? (
+      {!isLoading && !errorMessage && visibleProjects.length === 0 ? (
         <CostingBoardState
           title="No project available"
           description="No RFQ was returned by the backend for the costing workspace."
@@ -1511,9 +2174,9 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
         />
       ) : null}
 
-      {!isLoading && !errorMessage && projects.length > 0 ? (
+      {!isLoading && !errorMessage && visibleProjects.length > 0 ? (
         <div className="costing-simple__projects">
-          {projects.map((project) => {
+          {visibleProjects.map((project) => {
             const isExpanded = expandedProjectIds.includes(project.id)
             const projectStageEntries = project.stages.flatMap((stage) =>
               getProjectStageEntries(project, stage.key).map((entry) => ({
@@ -1534,9 +2197,11 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
                 onEditCosting={openEditCostingModal}
                 canFillSubElement={canFillSubElement}
                 canAssignPilot={canAssignPilot}
+                canAccessConversation={canAccessConversation}
                 onAssignPilot={openPilotAssignmentModal}
                 onFillSubElement={openFillSubElementModal}
                 onViewSubElement={openViewSubElementModal}
+                onOpenConversation={openConversationDrawer}
               />
             )
           })}
@@ -1576,6 +2241,21 @@ export default function CostingBoardProfessional({ currentUser = {} }) {
         onRequestClose={closePilotAssignmentModal}
         onPilotChange={setSelectedPilotValue}
         onSubmit={handlePilotAssignmentSubmit}
+      />
+
+      <CostingSubElementConversationDrawer
+        drawer={activeConversationDrawer}
+        conversation={conversationData}
+        currentUser={currentUser}
+        isLoading={isLoadingConversation}
+        isSubmitting={isSubmittingConversation}
+        mentionableUsers={getConversationMentionableUsers(pilotUsers)}
+        isLoadingMentionableUsers={isLoadingConversationMentionUsers}
+        mentionableUsersError={conversationMentionUsersError}
+        errorMessage={conversationError}
+        onRequestClose={closeConversationDrawer}
+        onReload={() => setConversationReloadKey((currentValue) => currentValue + 1)}
+        onSubmit={handleConversationSubmit}
       />
       </section>
     </>

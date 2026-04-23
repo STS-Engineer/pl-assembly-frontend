@@ -37,9 +37,11 @@ export default function CostingProjectCard({
   onEditCosting,
   canFillSubElement,
   canAssignPilot,
+  canAccessConversation,
   onAssignPilot,
   onFillSubElement,
   onViewSubElement,
+  onOpenConversation,
 }) {
   const [expandedStages, setExpandedStages] = useState({})
 
@@ -154,9 +156,11 @@ export default function CostingProjectCard({
                             subElement={subElement}
                             canFill={canFillSubElement?.(subElement) ?? false}
                             canAssignPilot={canAssignPilot?.(subElement) ?? false}
+                            canOpenConversation={canAccessConversation?.(subElement) ?? false}
                             onAssignPilot={() => onAssignPilot(project, entry, subElement)}
                             onFill={() => onFillSubElement(project, entry, subElement)}
                             onView={() => onViewSubElement(project, entry, subElement)}
+                            onOpenConversation={() => onOpenConversation(project, entry, subElement)}
                           />
                         ))}
                       </div>

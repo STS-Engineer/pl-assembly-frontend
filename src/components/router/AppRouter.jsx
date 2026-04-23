@@ -4,8 +4,10 @@ import {
   createContext,
   isValidElement,
   startTransition,
+  useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from 'react'
 
@@ -26,10 +28,13 @@ export function AppRouter({ children }) {
   const [currentPath, setCurrentPath] = useState(() =>
     normalizePath(window.location.pathname),
   )
+  const currentPathRef = useRef(currentPath)
 
   useEffect(() => {
     const handlePopState = () => {
-      setCurrentPath(normalizePath(window.location.pathname))
+      const nextPath = normalizePath(window.location.pathname)
+      currentPathRef.current = nextPath
+      setCurrentPath(nextPath)
     }
 
     window.addEventListener('popstate', handlePopState)
@@ -39,19 +44,24 @@ export function AppRouter({ children }) {
     }
   }, [])
 
-  const navigate = (to) => {
+  useEffect(() => {
+    currentPathRef.current = currentPath
+  }, [currentPath])
+
+  const navigate = useCallback((to) => {
     const nextPath = normalizePath(to)
 
-    if (nextPath === currentPath) {
+    if (nextPath === currentPathRef.current) {
       return
     }
 
     window.history.pushState({}, '', nextPath)
+    currentPathRef.current = nextPath
 
     startTransition(() => {
       setCurrentPath(nextPath)
     })
-  }
+  }, [])
 
   return (
     <RouterContext.Provider

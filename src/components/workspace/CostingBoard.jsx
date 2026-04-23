@@ -421,8 +421,8 @@ export default function CostingBoard() {
   const awaitingCostingCount = getAwaitingCostingCount(projects)
 
   const boardStats = [
-    { label: 'Projects', value: totalProjects, tone: 'neutral' },
-    { label: 'RFQs', value: totalRfqs, tone: 'info' },
+    { label: 'RFQs', value: totalProjects, tone: 'neutral' },
+    { label: 'Sub-elements', value: totalRfqs, tone: 'info' },
     { label: 'Linked costings', value: totalCostings, tone: 'neutral' },
     { label: 'Awaiting costing', value: awaitingCostingCount, tone: 'warning' },
   ]
