@@ -1,4 +1,9 @@
-export default function CostingBoardHeader({ totalProjects, boardStats, pluralize }) {
+export default function CostingBoardHeader({
+  totalProjects,
+  boardStats,
+  pluralize,
+  onAddManualRfq,
+}) {
   return (
     <header className="costing-simple__hero">
       <div className="costing-simple__hero-main">
@@ -9,6 +14,12 @@ export default function CostingBoardHeader({ totalProjects, boardStats, pluraliz
             A dedicated workspace to set and manage assembly costs, ensuring accurate pricing
             across every production configuration.
           </p>
+        </div>
+
+        <div className="costing-simple__hero-actions">
+          <button type="button" className="button button-primary" onClick={onAddManualRfq}>
+            Add RFQ manually
+          </button>
         </div>
       </div>
 

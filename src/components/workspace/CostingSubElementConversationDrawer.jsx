@@ -275,6 +275,83 @@ function renderMessageBodyWithMentions(message, mentionableUsers = []) {
   return parts
 }
 
+function renderMessageBodyWithLinks(content, contentKey = 0) {
+  // If content is a React element (mention), return as-is
+  if (typeof content === 'object' && content !== null) {
+    return content
+  }
+
+  const normalizedContent = String(content ?? '')
+
+  // Regex to match URLs (http://, https://, www., and standalone domains)
+  const urlRegex = /(https?:\/\/[^\s<>"\]]*|www\.[^\s<>"\]]*[a-zA-Z0-9])/gi
+  const parts = []
+  let lastIndex = 0
+  let match = urlRegex.exec(normalizedContent)
+  let linkCount = 0
+
+  while (match) {
+    if (match.index > lastIndex) {
+      parts.push(normalizedContent.slice(lastIndex, match.index))
+    }
+
+    const url = match[0]
+    const href = url.startsWith('http') ? url : `https://${url}`
+
+    parts.push(
+      <a
+        key={`link-${contentKey}-${linkCount}`}
+        href={href}
+        target="_blank"
+        rel="noreferrer noopener"
+        className="costing-conversation__link"
+      >
+        {url}
+      </a>,
+    )
+
+    lastIndex = match.index + match[0].length
+    match = urlRegex.exec(normalizedContent)
+    linkCount++
+  }
+
+  if (lastIndex === 0) {
+    return normalizedContent
+  }
+
+  if (lastIndex < normalizedContent.length) {
+    parts.push(normalizedContent.slice(lastIndex))
+  }
+
+  return parts.length === 1 ? parts[0] : parts
+}
+
+function renderMessageBodyWithMentionsAndLinks(message, mentionableUsers = []) {
+  const mentionedContent = renderMessageBodyWithMentions(message, mentionableUsers)
+  
+  // If mentionedContent is a string, process it for links
+  if (typeof mentionedContent === 'string') {
+    return renderMessageBodyWithLinks(mentionedContent, 0)
+  }
+
+  // If mentionedContent is an array of mixed content (strings and React elements)
+  if (Array.isArray(mentionedContent)) {
+    const finalParts = []
+    mentionedContent.forEach((part, index) => {
+      const processedPart = renderMessageBodyWithLinks(part, index)
+      if (Array.isArray(processedPart)) {
+        finalParts.push(...processedPart)
+      } else {
+        finalParts.push(processedPart)
+      }
+    })
+    return finalParts
+  }
+
+  // Return as-is if it's a React element
+  return mentionedContent
+}
+
 function getIdentityLookupValues(source = {}) {
   return Array.from(
     new Set(
@@ -705,7 +782,7 @@ export default function CostingSubElementConversationDrawer({
 
                     {getTrimmedText(item?.message) ? (
                       <p className="costing-conversation__message-body">
-                        {renderMessageBodyWithMentions(item.message, messageMentionUsers)}
+                        {renderMessageBodyWithMentionsAndLinks(item.message, messageMentionUsers)}
                       </p>
                     ) : null}
 

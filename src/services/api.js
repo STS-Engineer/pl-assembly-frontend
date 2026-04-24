@@ -119,15 +119,15 @@ function translateApiMessage(message) {
 }
 
 async function request(path, options = {}) {
-  const { token, headers, ...fetchOptions } = options
+  const {
+    token,
+    headers,
+    suppressNetworkErrorLog = false,
+    suppressHttpErrorLog = false,
+    ...fetchOptions
+  } = options
   const requestUrl = buildUrl(path)
   let response
-
-  console.log('[API] Sending request:', {
-    method: fetchOptions.method || 'GET',
-    url: requestUrl,
-    hasToken: !!token,
-  })
 
   try {
     response = await fetch(requestUrl, {
@@ -139,10 +139,12 @@ async function request(path, options = {}) {
       },
     })
   } catch (error) {
-    console.error('[API] Network error:', {
-      url: requestUrl,
-      message: error.message,
-    })
+    if (!suppressNetworkErrorLog) {
+      console.error('[API] Network error:', {
+        url: requestUrl,
+        message: error.message,
+      })
+    }
 
     if (error instanceof TypeError) {
       throw new Error(
@@ -156,20 +158,7 @@ async function request(path, options = {}) {
   const data = await response.json().catch(() => null)
   const translatedMessage = translateApiMessage(data?.message)
 
-  console.log('[API] Response received:', {
-    status: response.status,
-    statusText: response.statusText,
-    url: requestUrl,
-    hasData: !!data,
-  })
-
   if (!response.ok) {
-    console.error('[API] HTTP error:', {
-      status: response.status,
-      statusText: response.statusText,
-      message: data?.message,
-      url: requestUrl,
-    })
 
     const error = new Error(translatedMessage || 'Request failed.')
     error.statusCode = response.status
@@ -207,38 +196,19 @@ async function requestWithFallback(paths, options = {}) {
   let lastError = null
   const pathArray = Array.isArray(paths) ? paths : [paths]
 
-  console.log('[API] requestWithFallback - Attempting paths:', pathArray)
 
   for (const path of pathArray) {
     try {
-      console.log(`[API] Trying path: ${path}`)
       const result = await request(path, options)
-      console.log(`[API] Success with path: ${path}`)
       return result
     } catch (error) {
       lastError = error
-      console.warn(`[API] Failed with path: ${path}`, {
-        statusCode: error?.statusCode,
-        message: error?.message,
-      })
 
-      // If it's not a 404, throw immediately (don't try other paths)
       if (error?.statusCode !== 404) {
-        console.error(`[API] Non-404 error, throwing immediately`, {
-          statusCode: error?.statusCode,
-          message: error?.message,
-          path,
-        })
         throw error
       }
     }
   }
-
-  console.error('[API] All fallback paths failed. Last error:', {
-    statusCode: lastError?.statusCode,
-    message: lastError?.message,
-    paths: pathArray,
-  })
 
   throw lastError || new Error('Request failed.')
 }
@@ -289,12 +259,13 @@ export function changePassword(userId, payload, token) {
   })
 }
 
-export function getNotifications(token, limit = 20) {
+export function getNotifications(token, limit = 20, options = {}) {
   const queryString = buildQueryString({ limit })
 
   return request(`/notifications${queryString}`, {
     method: 'GET',
     token,
+    ...options,
   })
 }
 
@@ -309,6 +280,112 @@ export function getUsers(token) {
   return request('/users', {
     method: 'GET',
     token,
+  })
+}
+
+function buildCreateRfqPayload(payload = {}) {
+  const reference = String(payload.reference ?? '').trim()
+  const customerName = String(payload.customer_name ?? payload.customerName ?? '').trim()
+  const projectName = String(payload.project_name ?? payload.projectName ?? '').trim()
+  const productName = String(payload.product_name ?? payload.productName ?? '').trim()
+  const deliveryPlant = String(payload.delivery_plant ?? payload.deliveryPlant ?? '').trim()
+  const quotationExpectedDate = String(
+    payload.quotation_expected_date ?? payload.quotationExpectedDate ?? '',
+  ).trim()
+  const annualVolume = String(payload.annual_volume ?? payload.annualVolume ?? '').trim()
+  const targetPrice = String(payload.target_price ?? payload.targetPrice ?? '').trim()
+  const targetPriceCurrency = String(
+    payload.target_price_currency ?? payload.targetPriceCurrency ?? payload.currency ?? 'EUR',
+  ).trim()
+  
+  const rfqData = {
+    systematic_rfq_id: reference,
+    customer_name: customerName,
+    project_name: projectName,
+    product_name: productName,
+    delivery_plant: deliveryPlant,
+    quotation_expected_date: quotationExpectedDate,
+    annual_volume: annualVolume,
+    target_price: targetPrice,
+    target_price_currency: targetPriceCurrency,
+  }
+
+  // Add optional fields if provided
+  const optionalFields = [
+    'scope',
+    'country',
+    'po_date',
+    'sop_year',
+    'to_total',
+    'chat_mode',
+    'ppap_date',
+    'rfq_files',
+    'application',
+    'customer_pn',
+    'contact_name',
+    'contact_role',
+    'contact_email',
+    'contact_phone',
+    'delivery_zone',
+    'rfq_file_path',
+    'entry_barriers',
+    'revision_level',
+    'strategic_note',
+    'validator_role',
+    'business_trigger',
+    'target_price_eur',
+    'target_price_usd',
+    'target_price_cny',
+    'product_ownership',
+    'type_of_packaging',
+    'capacity_available',
+    'rfq_reception_date',
+    'zone_manager_email',
+    'final_recommendation',
+    'pays_for_development',
+    'product_line_acronym',
+    'responsibility_design',
+    'expected_payment_terms',
+    'responsibility_validation',
+    'customer_tooling_conditions',
+    'expected_delivery_conditions',
+  ]
+
+  optionalFields.forEach((field) => {
+    const camelCaseField = field.replace(/_([a-z])/g, (g) => g[1].toUpperCase())
+    const value = String(payload[field] ?? payload[camelCaseField] ?? '').trim()
+    
+    if (value) {
+      rfqData[field] = value
+    }
+  })
+
+  if (targetPrice) {
+    if (targetPriceCurrency === 'USD') {
+      rfqData.target_price_usd = rfqData.target_price_usd || targetPrice
+    } else if (targetPriceCurrency === 'CNY') {
+      rfqData.target_price_cny = rfqData.target_price_cny || targetPrice
+    } else {
+      rfqData.target_price_eur = rfqData.target_price_eur || targetPrice
+    }
+  }
+
+  Object.keys(rfqData).forEach((key) => {
+    if (rfqData[key] === '' || rfqData[key] === null || rfqData[key] === undefined) {
+      delete rfqData[key]
+    }
+  })
+
+  return {
+    rfq_id: reference,
+    rfq_data: rfqData,
+  }
+}
+
+export function createRfq(payload) {
+  return request('/rfqs', {
+    method: 'POST',
+    body: JSON.stringify(buildCreateRfqPayload(payload)),
   })
 }
 
@@ -379,8 +456,6 @@ export function getInitialSubElementByKey(costingId, key) {
 
 export function updateInitialSubElement(costingId, key, payload) {
   const url = `/rfq-costing-initial-sub-elements/costing/${encodeURIComponent(costingId)}/${encodeURIComponent(key)}`
-  console.log('[api.js] updateInitialSubElement ▶ PATCH', url)
-  console.log('[api.js] payload sent:', payload)
 
   return request(url, {
     method: 'PATCH',

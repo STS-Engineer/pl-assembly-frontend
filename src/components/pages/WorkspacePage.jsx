@@ -267,6 +267,8 @@ export default function WorkspacePage({ routeParams = {} }) {
   const notificationPanelRef = useRef(null)
   const changePasswordFormRef = useRef(null)
   const currentPasswordInputRef = useRef(null)
+  const notificationRequestRef = useRef(null)
+  const lastNotificationRefreshAtRef = useRef(0)
   const requestedSectionId = String(routeParams.sectionId || '').trim()
   const activeSectionId = isWorkspaceSectionId(requestedSectionId)
     ? requestedSectionId
@@ -282,22 +284,46 @@ export default function WorkspacePage({ routeParams = {} }) {
       return
     }
 
+    const now = Date.now()
+    if (silent && notificationRequestRef.current) {
+      return notificationRequestRef.current
+    }
+
+    if (silent && now - lastNotificationRefreshAtRef.current < 1500) {
+      return
+    }
+
     if (!silent) {
       setIsNotificationPanelLoading(true)
     }
 
-    try {
-      const response = await getNotifications(currentSession.token, 20)
-      const normalizedResponse = normalizeNotificationsResponse(response)
-      setWorkspaceNotifications(normalizedResponse.items)
-      setUnreadNotificationCount(normalizedResponse.unreadCount)
-    } catch (error) {
-      console.error('[WorkspacePage] Unable to load notifications:', error)
-    } finally {
-      if (!silent) {
-        setIsNotificationPanelLoading(false)
+    const requestPromise = (async () => {
+      try {
+        const response = await getNotifications(currentSession.token, 20, {
+          suppressNetworkErrorLog: silent,
+          suppressHttpErrorLog: silent,
+        })
+        const normalizedResponse = normalizeNotificationsResponse(response)
+        setWorkspaceNotifications(normalizedResponse.items)
+        setUnreadNotificationCount(normalizedResponse.unreadCount)
+        lastNotificationRefreshAtRef.current = Date.now()
+      } catch (error) {
+        if (!silent) {
+          console.error('[WorkspacePage] Unable to load notifications:', error)
+        }
+      } finally {
+        if (notificationRequestRef.current === requestPromise) {
+          notificationRequestRef.current = null
+        }
+
+        if (!silent) {
+          setIsNotificationPanelLoading(false)
+        }
       }
-    }
+    })()
+
+    notificationRequestRef.current = requestPromise
+    return requestPromise
   }, [])
 
   const markNotificationsAsRead = useCallback(async () => {

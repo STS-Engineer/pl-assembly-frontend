@@ -28,6 +28,66 @@ function CostingCurrencyBadge({ label, theme = 'neutral' }) {
   return <span className={`costing-simple__currency costing-simple__currency--${theme}`}>{label}</span>
 }
 
+function EditIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M4 20H8L18.5 9.5C19.3 8.7 19.3 7.4 18.5 6.6L17.4 5.5C16.6 4.7 15.3 4.7 14.5 5.5L4 16V20Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M13.5 6.5L17.5 10.5"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function DeleteIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path
+        d="M5 7H19"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+      <path
+        d="M9 7V5.8C9 5.36 9.36 5 9.8 5H14.2C14.64 5 15 5.36 15 5.8V7"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M7.5 7L8.2 18.2C8.26 19.05 8.96 19.7 9.81 19.7H14.19C15.04 19.7 15.74 19.05 15.8 18.2L16.5 7"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M10 11V16"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+      <path
+        d="M14 11V16"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
 export default function CostingProjectCard({
   project,
   isExpanded,
@@ -35,6 +95,8 @@ export default function CostingProjectCard({
   onToggle,
   onOpenStage,
   onEditCosting,
+  onDeleteCosting,
+  deletingCostingId = '',
   canFillSubElement,
   canAssignPilot,
   canAccessConversation,
@@ -56,34 +118,31 @@ export default function CostingProjectCard({
     <article
       className={`costing-simple__project costing-simple__project--${project.currencyTheme}`}
     >
-      <div className="costing-simple__project-head">
-        <div className="costing-simple__project-main">
-          <div className="costing-simple__project-title-row">
-            <h3>{project.title}</h3>
+      <button
+        type="button"
+        className="costing-simple__project-trigger"
+        onClick={onToggle}
+        aria-expanded={isExpanded}
+        aria-controls={`${project.id}-stages`}
+      >
+        <div className="costing-simple__project-head">
+          <div className="costing-simple__project-main">
+            <div className="costing-simple__project-title-row">
+              <h3>{project.title}</h3>
 
-            <div className="costing-simple__project-tags">
-              <CostingCurrencyBadge
-                label={project.currencyLabel}
-                theme={project.currencyTheme}
-              />
-              <CostingPill tone={project.statusTone}>{project.status}</CostingPill>
+              <div className="costing-simple__project-tags">
+                <CostingCurrencyBadge
+                  label={project.currencyLabel}
+                  theme={project.currencyTheme}
+                />
+                <CostingPill tone={project.statusTone}>{project.status}</CostingPill>
+              </div>
             </div>
           </div>
-        </div>
 
-        <div className="costing-simple__project-actions">
-          <button
-            type="button"
-            className="costing-simple__toggle"
-            onClick={onToggle}
-            aria-expanded={isExpanded}
-            aria-controls={`${project.id}-stages`}
-          >
-            <span>{isExpanded ? 'Hide stages' : 'Show stages'}</span>
-            <CostingChevron expanded={isExpanded} />
-          </button>
+          <CostingChevron expanded={isExpanded} />
         </div>
-      </div>
+      </button>
 
       {isExpanded ? (
         <div className="costing-simple__project-body" id={`${project.id}-stages`}>
@@ -109,6 +168,10 @@ export default function CostingProjectCard({
                 const createdDate =
                   entry.createdDate ?? entry.createdAt ?? entry.created_at ?? 'Not dated'
                 const subElements = Array.isArray(entry.subElements) ? entry.subElements : []
+                const isStageExpanded = Boolean(expandedStages[`${entry.stageKey}-${entry.id}`])
+                const stageDetailsId = `${entry.stageKey}-${entry.id}-steps`
+                const isInitialCosting = entry.stageKey === 'initial'
+                const isDeleting = String(entry.id) === String(deletingCostingId)
 
                 return (
                   <article
@@ -116,40 +179,75 @@ export default function CostingProjectCard({
                     className={`costing-simple__stage-line costing-simple__stage-line--${entry.stageKey}`}
                   >
                     <div className="costing-simple__stage-line-top">
-                      <div className="costing-simple__stage-line-main">
-                        <strong className="costing-simple__stage-line-title">
-                          {entry.stageLabel} {entry.reference}
-                        </strong>
+                      {subElements.length > 0 ? (
+                        <button
+                          type="button"
+                          className="costing-simple__stage-line-trigger"
+                          onClick={() => toggleSubElements(entry.stageKey, entry.id)}
+                          aria-expanded={isStageExpanded}
+                          aria-controls={stageDetailsId}
+                        >
+                          <div className="costing-simple__stage-line-main">
+                            <strong className="costing-simple__stage-line-title">
+                              {entry.stageLabel} {entry.reference}
+                            </strong>
 
-                        <p className="costing-simple__stage-line-meta">
-                          {`Product family: ${productFamily} | Plant: ${plant} | Created date: ${createdDate}`}
-                        </p>
-                      </div>
+                            <p className="costing-simple__stage-line-meta">
+                              {`Product family: ${productFamily} | Plant: ${plant} | Created date: ${createdDate}`}
+                            </p>
+                          </div>
+                          <CostingChevron expanded={isStageExpanded} />
+                        </button>
+                      ) : (
+                        <div className="costing-simple__stage-line-main">
+                          <strong className="costing-simple__stage-line-title">
+                            {entry.stageLabel} {entry.reference}
+                          </strong>
 
-                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                        {subElements.length > 0 ? (
+                          <p className="costing-simple__stage-line-meta">
+                            {`Product family: ${productFamily} | Plant: ${plant} | Created date: ${createdDate}`}
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="costing-simple__stage-line-actions">
+                        {isInitialCosting ? (
+                          <div className="costing-simple__stage-icon-actions">
+                            <button
+                              type="button"
+                              className="costing-simple__stage-icon-button"
+                              onClick={() => onEditCosting(project, entry)}
+                              aria-label={`Edit ${entry.stageLabel} ${entry.reference}`}
+                              title="Edit costing"
+                              disabled={isDeleting}
+                            >
+                              <EditIcon />
+                            </button>
+                            <button
+                              type="button"
+                              className="costing-simple__stage-icon-button costing-simple__stage-icon-button--danger"
+                              onClick={() => onDeleteCosting?.(project, entry)}
+                              aria-label={`Delete ${entry.stageLabel} ${entry.reference}`}
+                              title="Delete costing"
+                              disabled={isDeleting}
+                            >
+                              <DeleteIcon />
+                            </button>
+                          </div>
+                        ) : (
                           <button
                             type="button"
                             className="button button-secondary costing-simple__stage-edit"
-                            onClick={() => toggleSubElements(entry.stageKey, entry.id)}
+                            onClick={() => onEditCosting(project, entry)}
                           >
-                            {expandedStages[`${entry.stageKey}-${entry.id}`]
-                              ? `Hide ${subElements.length} Steps`
-                              : `Show ${subElements.length} Steps`}
+                            Edit
                           </button>
-                        ) : null}
-                        <button
-                          type="button"
-                          className="button button-secondary costing-simple__stage-edit"
-                          onClick={() => onEditCosting(project, entry)}
-                        >
-                          Edit
-                        </button>
+                        )}
                       </div>
                     </div>
 
-                    {expandedStages[`${entry.stageKey}-${entry.id}`] && subElements.length > 0 ? (
-                      <div className="costing-simple__sub-elements">
+                    {isStageExpanded && subElements.length > 0 ? (
+                      <div className="costing-simple__sub-elements" id={stageDetailsId}>
                         {subElements.map((subElement) => (
                           <CostingSubElementCard
                             key={subElement.key}

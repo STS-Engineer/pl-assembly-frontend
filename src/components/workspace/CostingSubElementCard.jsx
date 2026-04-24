@@ -1,6 +1,10 @@
 const STATUS_TONE_MAP = {
   done: 'done',
+  late: 'critical',
   'late!': 'critical',
+  help: 'critical',
+  'help!': 'critical',
+  'help!!': 'critical',
   'help!!!': 'critical',
   'in progress': 'info',
   'ready to start': 'info',
@@ -30,10 +34,6 @@ const APPROVAL_TONE_MAP = {
 function getApprovalTone(approvalStatus) {
   const normalizedStatus = String(approvalStatus || '').toLowerCase().trim()
   return APPROVAL_TONE_MAP[normalizedStatus] || 'neutral'
-}
-
-function isApprovedSubElement(approvalStatus) {
-  return String(approvalStatus || '').toLowerCase().trim() === 'approved'
 }
 
 function calculateWorkingDays(fromDate, toDate) {
@@ -126,7 +126,6 @@ export default function CostingSubElementCard({
   const dueDateLabel = subElement.dueDateLabel || 'Not planned'
   const statusTone = getStatusTone(subElement.status)
   const approvalTone = getApprovalTone(subElement.approvalStatus)
-  const isApproved = isApprovedSubElement(subElement.approvalStatus)
   const parsedConversationMessageCount = Number.parseInt(
     String(subElement.conversationMessageCount ?? '').trim(),
     10,
@@ -236,8 +235,6 @@ export default function CostingSubElementCard({
               type="button"
               className="button button-primary costing-simple__sub-element-action"
               onClick={onFill}
-              disabled={isApproved}
-              title={isApproved ? 'This step is already approved.' : undefined}
             >
               Fill form
             </button>

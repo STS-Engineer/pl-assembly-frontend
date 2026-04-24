@@ -132,6 +132,12 @@ export const COSTING_SUB_ELEMENT_TEMPLATES = [
 const STATUS_ALIASES = {
   'to be planned': 'To be planned',
   'to be plannd': 'To be planned',
+  late: 'Late!',
+  'late !': 'Late!',
+  help: 'Help!!!',
+  'help!': 'Help!!!',
+  'help!!': 'Help!!!',
+  'help !!!': 'Help!!!',
   'question to pm': 'Question to PM',
   'qustion to pm': 'Question to PM',
   'question to sales': 'Question to sales',
@@ -329,40 +335,7 @@ function getOrderedVisibleCostingSubElementTemplates(sourceElementsMap, visibleK
 }
 
 function getVisibleCostingSubElementKeys(sourceElementsMap) {
-  const visibleKeys = new Set([FIRST_COSTING_SUB_ELEMENT_KEY])
-
-  if (!isFirstCostingSubElementApproved(sourceElementsMap)) {
-    return visibleKeys
-  }
-
-  const normalizedDesignType = getNormalizedDesignType(sourceElementsMap)
-  const isAvoDesign = normalizedDesignType === 'avo design'
-  const isCustomerDesign = normalizedDesignType === 'customer design'
-
-  if (isAvoDesign) {
-    visibleKeys.add(AVO_DESIGN_ASSEMBLY_2D_KEY)
-  }
-
-  if (
-    isCustomerDesign ||
-    (isAvoDesign && isCostingSubElementApproved(sourceElementsMap.get(AVO_DESIGN_ASSEMBLY_2D_KEY)))
-  ) {
-    TECHNICAL_PACKAGE_STEP_KEYS.forEach((key) => {
-      visibleKeys.add(key)
-    })
-  }
-
-  if (areCostingSubElementsApproved(sourceElementsMap, TECHNICAL_PACKAGE_STEP_KEYS)) {
-    COSTING_PREPARATION_STEP_KEYS.forEach((key) => {
-      visibleKeys.add(key)
-    })
-  }
-
-  if (areCostingSubElementsApproved(sourceElementsMap, COSTING_PREPARATION_STEP_KEYS)) {
-    visibleKeys.add(COSTING_FILE_REVIEWED_KEY)
-  }
-
-  return visibleKeys
+  return new Set(DEFAULT_COSTING_SUB_ELEMENT_ORDER)
 }
 
 function getAutoStartedCostingSubElementKeys(sourceElementsMap) {

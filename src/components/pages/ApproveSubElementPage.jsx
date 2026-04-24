@@ -210,7 +210,6 @@ export default function ApproveSubElementPage({ routeParams = {} }) {
   const [toastFeedback, setToastFeedback] = useState('')
   const [toastFeedbackType, setToastFeedbackType] = useState('success')
   const [statusOptions, setStatusOptions] = useState([])
-  const [selectedDesignType, setSelectedDesignType] = useState('')
   const [selectedManagerValue, setSelectedManagerValue] = useState('')
 
   useEffect(() => {
@@ -231,7 +230,6 @@ export default function ApproveSubElementPage({ routeParams = {} }) {
 
         setSubElement(data)
         setSelectedStatus(data.approval_status || data.approvalStatus || '')
-        setSelectedDesignType(data.design_type || data.designType || '')
         setSelectedManagerValue(resolveInitialManagerValue(data, managerOptions))
 
         // Extract status options from response
@@ -259,14 +257,12 @@ export default function ApproveSubElementPage({ routeParams = {} }) {
       return
     }
 
-    if (isDesignTypeStep(subElement) && !selectedDesignType) {
-      setError('Please select a design type before approving')
-      return
-    }
-
     const managerOptions = getManagerOptions(subElement)
     const selectedManager =
       managerOptions.find((manager) => manager.selectionValue === selectedManagerValue) || null
+    const persistedDesignType = getOptionalText(
+      subElement.design_type ?? subElement.designType,
+    )
 
     if (managerOptions.length > 0 && !selectedManager) {
       setError('Please select a manager before approving')
@@ -279,7 +275,9 @@ export default function ApproveSubElementPage({ routeParams = {} }) {
     try {
       const response = await approveSubElementByToken(token, {
         approval_status: selectedStatus,
-        ...(isDesignTypeStep(subElement) ? { design_type: selectedDesignType } : {}),
+        ...(isDesignTypeStep(subElement) && persistedDesignType
+          ? { design_type: persistedDesignType }
+          : {}),
         approver: selectedManager?.fullName || subElement.approver,
         approver_email: selectedManager?.email,
         approver_id: selectedManager?.id,
@@ -298,9 +296,6 @@ export default function ApproveSubElementPage({ routeParams = {} }) {
         setSubElement(nextSubElement)
         setSelectedStatus(
           savedSubElement.approval_status || savedSubElement.approvalStatus || selectedStatus,
-        )
-        setSelectedDesignType(
-          savedSubElement.design_type || savedSubElement.designType || selectedDesignType,
         )
         setSelectedManagerValue(
           resolveInitialManagerValue(nextSubElement, nextManagerOptions),
@@ -386,7 +381,6 @@ export default function ApproveSubElementPage({ routeParams = {} }) {
 
   const projectDisplayName = getProjectDisplayName(subElement)
   const managerOptions = getManagerOptions(subElement)
-  const shouldShowDesignType = isDesignTypeStep(subElement)
 
   return (
     <>
@@ -463,22 +457,6 @@ export default function ApproveSubElementPage({ routeParams = {} }) {
                     {formatDateValue(subElement.due_date || subElement.dueDate)}
                   </div>
                 </label>
-
-                {shouldShowDesignType ? (
-                  <label className="workspace-modal__field">
-                    <span>Design Type</span>
-                    <select
-                      value={selectedDesignType}
-                      onChange={(e) => setSelectedDesignType(e.target.value)}
-                      disabled={isSubmitting}
-                      required
-                    >
-                      <option value="">-- Select Design Type --</option>
-                      <option value="Customer Design">Customer Design</option>
-                      <option value="AVO Design">AVO Design</option>
-                    </select>
-                  </label>
-                ) : null}
 
                 <label className="workspace-modal__field" htmlFor="approval-status">
                   <span>Status to Approve</span>

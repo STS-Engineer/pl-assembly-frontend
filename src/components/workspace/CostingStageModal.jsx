@@ -103,7 +103,7 @@ const CostingStageModal = memo(function CostingStageModal({
             </label>
 
             <label className="workspace-modal__field" htmlFor="costing-reference">
-              <span>Costing reference</span>
+              <span>Product reference</span>
               <input
                 id="costing-reference"
                 type="text"

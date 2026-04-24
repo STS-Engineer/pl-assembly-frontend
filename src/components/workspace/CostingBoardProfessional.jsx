@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import {
   createRfqCostingSubElementConversationMessage,
+  createRfq,
   createRfqCosting,
+  deleteRfqCosting,
   getUsers,
   getRfqs,
   getRfqCostingSubElementOptions,
@@ -15,14 +17,17 @@ import {
 import { getSession } from '../../services/session'
 import CostingBoardHeader from './CostingBoardHeader'
 import CostingBoardState from './CostingBoardState'
+import CostingDeleteConfirmationModal from './CostingDeleteConfirmationModal'
 import CostingToast from './CostingToast'
 import CostingProjectCard from './CostingProjectCard'
 import CostingPilotAssignmentModal from './CostingPilotAssignmentModal'
+import CostingRfqModal, { createEmptyRfqForm } from './CostingRfqModal'
 import CostingStageModal, { createEmptyCostingForm } from './CostingStageModal'
 import CostingSubElementConversationDrawer from './CostingSubElementConversationDrawer'
 import CostingSubElementModal from './CostingSubElementModal'
 import {
   COSTING_SUB_ELEMENT_STATUS_OPTIONS,
+  createDefaultCostingSubElements,
   createEmptyCostingSubElementForm,
   getCostingSubElementTemplate,
   normalizeCostingSubElementStatusOptions,
@@ -408,9 +413,10 @@ function normalizeCosting(costing) {
     'Not dated',
   )
 
-  // Always normalize sub-elements, regardless of stage key
-  const rawSubElements = costing?.subElements ?? costing?.sub_elements
-  const normalizedSubElements = normalizeCostingSubElements(rawSubElements)
+  const rawSubElements =
+    stageKey === 'initial' ? costing?.subElements ?? costing?.sub_elements : []
+  const normalizedSubElements =
+    stageKey === 'initial' ? normalizeCostingSubElements(rawSubElements) : []
   const subElements = normalizedSubElements.map((subElement) => ({
     ...subElement,
     dueDateLabel: formatDateValue(subElement.dueDate, 'Not planned'),
@@ -1113,6 +1119,36 @@ function resolveInitialPilotSelectionValue(subElement, pilotOptions) {
   return matchedPilot?.selectionValue || ''
 }
 
+function serializeSubElementForCostingPayload(subElement) {
+  return {
+    key: subElement.key,
+    title: subElement.title,
+    pilot: subElement.pilot,
+    approver: subElement.approver,
+    status: subElement.status,
+    approval_status: subElement.approvalStatus,
+    duration: subElement.duration,
+    due_date: subElement.dueDate,
+  }
+}
+
+function getCreatedCostingId(response) {
+  return (
+    getOptionalText(response?.id) ||
+    getOptionalText(response?.costing_id) ||
+    getOptionalText(response?.costingId) ||
+    getOptionalText(response?.costing?.id) ||
+    getOptionalText(response?.costing?.costing_id) ||
+    getOptionalText(response?.costing?.costingId) ||
+    getOptionalText(response?.item?.id) ||
+    getOptionalText(response?.item?.costing_id) ||
+    getOptionalText(response?.item?.costingId) ||
+    getOptionalText(response?.data?.id) ||
+    getOptionalText(response?.data?.costing_id) ||
+    getOptionalText(response?.data?.costingId)
+  )
+}
+
 async function attachInitialCostingSubElements(rfqs, currentRole) {
   const sourceRfqs = Array.isArray(rfqs) ? rfqs : []
   const initialCostingIds = sourceRfqs.flatMap((rfq) =>
@@ -1210,8 +1246,14 @@ export default function CostingBoardProfessional({ currentUser = {}, workspaceAc
   const [pilotAssignmentError, setPilotAssignmentError] = useState('')
   const [isLoadingPilotUsers, setIsLoadingPilotUsers] = useState(false)
   const [isSubmittingPilotAssignment, setIsSubmittingPilotAssignment] = useState(false)
-  const [pilotAssignmentFeedback, setPilotAssignmentFeedback] = useState('')
-  const [pilotAssignmentFeedbackType, setPilotAssignmentFeedbackType] = useState('success')
+  const [activeRfqModal, setActiveRfqModal] = useState(null)
+  const [rfqForm, setRfqForm] = useState(() => createEmptyRfqForm())
+  const [rfqFormError, setRfqFormError] = useState('')
+  const [isSubmittingRfq, setIsSubmittingRfq] = useState(false)
+  const [workspaceFeedback, setWorkspaceFeedback] = useState('')
+  const [workspaceFeedbackType, setWorkspaceFeedbackType] = useState('success')
+  const [deletingCostingId, setDeletingCostingId] = useState('')
+  const [activeDeleteCostingModal, setActiveDeleteCostingModal] = useState(null)
   const [activeConversationDrawer, setActiveConversationDrawer] = useState(null)
   const [conversationData, setConversationData] = useState(null)
   const [conversationError, setConversationError] = useState('')
@@ -1584,6 +1626,47 @@ export default function CostingBoardProfessional({ currentUser = {}, workspaceAc
     setCostingFormError('')
   }
 
+  const closeRfqModal = ({ force = false } = {}) => {
+    if (isSubmittingRfq && !force) {
+      return
+    }
+
+    setActiveRfqModal(null)
+    setRfqForm(createEmptyRfqForm())
+    setRfqFormError('')
+  }
+
+  const closeDeleteCostingModal = ({ force = false } = {}) => {
+    if (deletingCostingId && !force) {
+      return
+    }
+
+    setActiveDeleteCostingModal(null)
+  }
+
+  const openRfqModal = () => {
+    setActiveRfqModal({
+      mode: 'create',
+    })
+    setRfqForm(createEmptyRfqForm())
+    setRfqFormError('')
+  }
+
+  const openDeleteCostingModal = (project, entry) => {
+    const costingId = String(entry?.id ?? '').trim()
+
+    if (!costingId) {
+      return
+    }
+
+    setActiveDeleteCostingModal({
+      costingId,
+      projectTitle: project?.title || 'Project',
+      stageLabel: entry?.stageLabel || 'Costing',
+      reference: entry?.reference || '',
+    })
+  }
+
   const openCostingModal = (project, stage) => {
     const projectRfq = project.rfqs[0]
 
@@ -1779,11 +1862,121 @@ export default function CostingBoardProfessional({ currentUser = {}, workspaceAc
   const canAccessConversation = (subElement) =>
     currentUserBackendRole === 'admin' || canFillSubElement(subElement)
 
+  const handleRfqFormChange = (field, value) => {
+    setRfqForm((currentForm) => ({
+      ...currentForm,
+      [field]: value,
+    }))
+  }
+
+  const handleRfqSubmit = async (event) => {
+    event.preventDefault()
+
+    if (!activeRfqModal) {
+      return
+    }
+
+    const reference = String(rfqForm.reference ?? '').trim()
+    const productName = String(rfqForm.productName ?? '').trim()
+    const annualVolume = String(rfqForm.annualVolume ?? '').trim()
+    const targetPrice = String(rfqForm.targetPrice ?? '').trim().replace(',', '.')
+
+    if (!reference) {
+      setRfqFormError('RFQ reference is required.')
+      return
+    }
+
+    if (!productName) {
+      setRfqFormError('Product name is required.')
+      return
+    }
+
+    if (annualVolume && !/^\d+$/.test(annualVolume)) {
+      setRfqFormError('Annual volume must be a whole number.')
+      return
+    }
+
+    if (targetPrice && !/^\d+(\.\d+)?$/.test(targetPrice)) {
+      setRfqFormError('Target price must be a valid number.')
+      return
+    }
+
+    setIsSubmittingRfq(true)
+    setRfqFormError('')
+
+    try {
+      await createRfq({
+        reference,
+        customer_name: String(rfqForm.customerName ?? '').trim(),
+        project_name: String(rfqForm.projectName ?? '').trim(),
+        product_name: productName,
+        delivery_plant: String(rfqForm.deliveryPlant ?? '').trim(),
+        quotation_expected_date: String(rfqForm.quotationDate ?? '').trim(),
+        annual_volume: annualVolume,
+        target_price: targetPrice,
+        target_price_currency: String(rfqForm.currency ?? 'EUR').trim() || 'EUR',
+        // Additional RFQ fields
+        scope: String(rfqForm.scope ?? '').trim(),
+        country: String(rfqForm.country ?? '').trim(),
+        po_date: String(rfqForm.poDate ?? '').trim(),
+        ppap_date: String(rfqForm.ppapDate ?? '').trim(),
+        contact_name: String(rfqForm.contactName ?? '').trim(),
+        contact_email: String(rfqForm.contactEmail ?? '').trim(),
+        contact_phone: String(rfqForm.contactPhone ?? '').trim(),
+        contact_role: String(rfqForm.contactRole ?? '').trim(),
+        customer_pn: String(rfqForm.customerPn ?? '').trim(),
+        application: String(rfqForm.application ?? '').trim(),
+        business_trigger: String(rfqForm.businessTrigger ?? '').trim(),
+        final_recommendation: String(rfqForm.finalRecommendation ?? '').trim(),
+        expected_payment_terms: String(rfqForm.expectedPaymentTerms ?? '').trim(),
+      })
+
+      closeRfqModal({ force: true })
+      setWorkspaceFeedback('RFQ created successfully.')
+      setWorkspaceFeedbackType('success')
+      setReloadKey((currentValue) => currentValue + 1)
+    } catch (error) {
+      const nextErrorMessage =
+        error?.statusCode === 404
+          ? 'Manual RFQ creation is not available on the backend.'
+          : error.message || 'Unable to create the RFQ.'
+
+      setRfqFormError(nextErrorMessage)
+      setWorkspaceFeedback(nextErrorMessage)
+      setWorkspaceFeedbackType('error')
+    } finally {
+      setIsSubmittingRfq(false)
+    }
+  }
+
   const handleCostingFormChange = (field, value) => {
     setCostingForm((currentForm) => ({
       ...currentForm,
       [field]: value,
     }))
+  }
+
+  const handleDeleteCosting = async () => {
+    const costingId = String(activeDeleteCostingModal?.costingId ?? '').trim()
+
+    if (!costingId) {
+      return
+    }
+
+    setDeletingCostingId(costingId)
+
+    try {
+      await deleteRfqCosting(costingId)
+      closeDeleteCostingModal({ force: true })
+      setWorkspaceFeedback('Costing deleted successfully.')
+      setWorkspaceFeedbackType('success')
+      setReloadKey((currentValue) => currentValue + 1)
+    } catch (error) {
+      setWorkspaceFeedback(error.message || 'Unable to delete the costing.')
+      setWorkspaceFeedbackType('error')
+    } finally {
+      setDeletingCostingId('')
+    }
   }
 
   const handleCostingSubmit = async (event) => {
@@ -1806,10 +1999,29 @@ export default function CostingBoardProfessional({ currentUser = {}, workspaceAc
       if (activeCostingModal.mode === 'edit') {
         await updateRfqCosting(activeCostingModal.costingId, payload)
       } else {
-        await createRfqCosting(activeCostingModal.rfqId, {
+        const createdCosting = await createRfqCosting(activeCostingModal.rfqId, {
           type: activeCostingModal.stageLabel,
           ...payload,
         })
+
+        if (activeCostingModal.stageKey === 'initial') {
+          const createdCostingId = getCreatedCostingId(createdCosting)
+
+          if (createdCostingId) {
+            try {
+              await updateRfqCosting(createdCostingId, {
+                sub_elements: createDefaultCostingSubElements().map(
+                  serializeSubElementForCostingPayload,
+                ),
+              })
+            } catch (error) {
+              console.warn(
+                `[CostingBoard] Unable to seed initial costing steps for costing ${createdCostingId}:`,
+                error,
+              )
+            }
+          }
+        }
       }
 
       closeCostingModal({ force: true })
@@ -1932,14 +2144,14 @@ export default function CostingBoardProfessional({ currentUser = {}, workspaceAc
       }
 
       closePilotAssignmentModal({ force: true })
-      setPilotAssignmentFeedback('Pilot assigned successfully.')
-      setPilotAssignmentFeedbackType('success')
+      setWorkspaceFeedback('Pilot assigned successfully.')
+      setWorkspaceFeedbackType('success')
       setReloadKey((currentValue) => currentValue + 1)
     } catch (error) {
       const nextErrorMessage = error.message || 'Unable to assign the pilot.'
       setPilotAssignmentError(nextErrorMessage)
-      setPilotAssignmentFeedback(nextErrorMessage)
-      setPilotAssignmentFeedbackType('error')
+      setWorkspaceFeedback(nextErrorMessage)
+      setWorkspaceFeedbackType('error')
     } finally {
       setIsSubmittingPilotAssignment(false)
     }
@@ -2136,9 +2348,9 @@ export default function CostingBoardProfessional({ currentUser = {}, workspaceAc
   return (
     <>
       <CostingToast
-        feedback={pilotAssignmentFeedback}
-        feedbackType={pilotAssignmentFeedbackType}
-        onClose={() => setPilotAssignmentFeedback('')}
+        feedback={workspaceFeedback}
+        feedbackType={workspaceFeedbackType}
+        onClose={() => setWorkspaceFeedback('')}
       />
 
       <section className="costing-simple" aria-label="Costing projects board">
@@ -2146,6 +2358,7 @@ export default function CostingBoardProfessional({ currentUser = {}, workspaceAc
         totalProjects={totalProjects}
         boardStats={boardStats}
         pluralize={pluralize}
+        onAddManualRfq={openRfqModal}
       />
 
       {isLoading ? (
@@ -2195,6 +2408,8 @@ export default function CostingBoardProfessional({ currentUser = {}, workspaceAc
                 onToggle={() => toggleProject(project.id)}
                 onOpenStage={openCostingModal}
                 onEditCosting={openEditCostingModal}
+                onDeleteCosting={openDeleteCostingModal}
+                deletingCostingId={deletingCostingId}
                 canFillSubElement={canFillSubElement}
                 canAssignPilot={canAssignPilot}
                 canAccessConversation={canAccessConversation}
@@ -2216,6 +2431,23 @@ export default function CostingBoardProfessional({ currentUser = {}, workspaceAc
         onRequestClose={closeCostingModal}
         onSubmit={handleCostingSubmit}
         onFieldChange={handleCostingFormChange}
+      />
+
+      <CostingRfqModal
+        modal={activeRfqModal}
+        form={rfqForm}
+        errorMessage={rfqFormError}
+        isSubmitting={isSubmittingRfq}
+        onRequestClose={closeRfqModal}
+        onSubmit={handleRfqSubmit}
+        onFieldChange={handleRfqFormChange}
+      />
+
+      <CostingDeleteConfirmationModal
+        modal={activeDeleteCostingModal}
+        isSubmitting={Boolean(deletingCostingId)}
+        onRequestClose={closeDeleteCostingModal}
+        onSubmit={handleDeleteCosting}
       />
 
       <CostingSubElementModal

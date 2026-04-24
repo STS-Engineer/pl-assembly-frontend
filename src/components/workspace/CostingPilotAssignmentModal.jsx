@@ -4,6 +4,18 @@ function getSearchValue(value) {
   return String(value ?? '').trim().toLowerCase()
 }
 
+function getPilotPrimaryLabel(pilotOption) {
+  return pilotOption?.fullName || pilotOption?.email || pilotOption?.selectionValue || 'No pilot selected'
+}
+
+function getPilotListLabel(pilotOption) {
+  return pilotOption?.label || getPilotPrimaryLabel(pilotOption)
+}
+
+function shouldDisplayPilotEmail(pilotOption) {
+  return Boolean(pilotOption?.email) && pilotOption.email !== pilotOption.fullName
+}
+
 export default function CostingPilotAssignmentModal({
   modal,
   pilotOptions = [],
@@ -97,7 +109,8 @@ export default function CostingPilotAssignmentModal({
 
           <div className="costing-simple__pilot-selected">
             <span>Selected pilot</span>
-            <strong>{selectedPilot?.fullName || selectedPilot?.email || 'No pilot selected'}</strong>
+            <strong>{getPilotPrimaryLabel(selectedPilot)}</strong>
+            {shouldDisplayPilotEmail(selectedPilot) ? <small>{selectedPilot.email}</small> : null}
           </div>
 
           <div className="costing-simple__pilot-picker">
@@ -135,9 +148,7 @@ export default function CostingPilotAssignmentModal({
                         role="option"
                         aria-selected={isSelected}
                       >
-                        <strong>
-                          {pilotOption.fullName || pilotOption.email || pilotOption.selectionValue}
-                        </strong>
+                        <strong>{getPilotListLabel(pilotOption)}</strong>
                       </button>
                     )
                   })
